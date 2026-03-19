@@ -18,6 +18,8 @@ from app.core.provider_loader import ProviderLoader
 from app.portals.portal_a import PortalA
 from app.portals.portal_b import PortalB
 from app.portals.portal_eos import PortalEOS
+from app.portals.portal_provecol import PortalProvecol
+from app.portals.portal_xeon import PortalXeon
 from app.utils.onedrive_sync import sync_downloads_to_hb, sync_paths_to_onedrive
 
 
@@ -55,8 +57,8 @@ class Orchestrator:
             "abako": PortalA,
             "portal_a": PortalA,
             "eos_consultores": PortalEOS,
-            "soluciones_practicas": PortalB,
-            "xeon": PortalB,
+            "soluciones_practicas": PortalProvecol,
+            "xeon": PortalXeon,
             "portal_b": PortalB,
         }
         self.last_failed_providers: list[Proveedor] = []

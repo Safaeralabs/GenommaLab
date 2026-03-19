@@ -269,6 +269,8 @@ class HomologationWriter:
     ) -> list[tuple[str, str, str]]:
         if file_path.suffix.lower() == ".csv":
             return self._extract_entries_csv(file_path, mapping)
+        if file_path.suffix.lower() == ".xls":
+            return self._extract_entries_xls(file_path, mapping)
         return self._extract_entries_xlsx(file_path, mapping)
 
     def _extract_entries_xlsx(
@@ -396,6 +398,104 @@ class HomologationWriter:
             if required_targets.issubset(found_targets):
                 return row_index, [str(cell) for cell in row]
         return None, []
+
+    def _extract_entries_xls(
+        self,
+        file_path: Path,
+        mapping: dict[str, str],
+    ) -> list[tuple[str, str, str]]:
+        """Read a legacy .xls file using xlrd and extract homologation entries."""
+        import xlrd  # type: ignore[import]
+
+        try:
+            wb = xlrd.open_workbook(str(file_path))
+        except Exception:
+            return []
+
+        sheet = wb.sheet_by_index(0)
+        required = {"Cod_Prod", "Descripcion_prod", "Unidades"}
+
+        header_idx = None
+        lookup: dict[str, int] = {}
+        for row_idx in range(min(10, sheet.nrows)):
+            row = [str(sheet.cell_value(row_idx, c)) for c in range(sheet.ncols)]
+            found: set[str] = set()
+            candidate: dict[str, int] = {}
+            for col_idx, raw_label in enumerate(row):
+                norm = self._normalize_text(raw_label)
+                target = mapping.get(norm)
+                if target:
+                    found.add(target)
+                    candidate[target] = col_idx
+            if required.issubset(found):
+                header_idx = row_idx
+                lookup = candidate
+                break
+
+        if header_idx is None:
+            # Fallback posicional para archivos sin cabecera estándar (ej. Provecol)
+            return self._extract_entries_xls_positional(sheet)
+
+        entries: list[tuple[str, str, str]] = []
+        for row_idx in range(header_idx + 1, sheet.nrows):
+            try:
+                cod = str(sheet.cell_value(row_idx, lookup["Cod_Prod"])).strip()
+                desc = str(sheet.cell_value(row_idx, lookup["Descripcion_prod"])).strip()
+                raw_u = sheet.cell_value(row_idx, lookup["Unidades"])
+                unidades = str(raw_u).strip().replace(".", ",")
+            except IndexError:
+                continue
+            if not cod or not desc:
+                continue
+            entries.append((cod, desc, unidades))
+
+        return entries
+
+    @staticmethod
+    def _extract_entries_xls_positional(
+        sheet,
+    ) -> list[tuple[str, str, str]]:
+        """Extracción posicional para XLS sin cabecera estándar (formato Provecol).
+
+        Detecta automáticamente si es ventas (código en col 3, desc en col 7)
+        o inventario (código en col 1, desc en col 3) buscando la primera fila
+        con un código numérico de 6 dígitos.
+        """
+        import re
+        CODE_RE = re.compile(r"^\d{3,10}$")
+
+        # Detectar formato buscando la columna donde aparecen los códigos
+        col_code, col_desc, col_units = None, None, None
+        for row_idx in range(sheet.nrows):
+            row = [str(sheet.cell_value(row_idx, c)).strip() for c in range(sheet.ncols)]
+            # Formato ventas: código en col 3, descripción en col 7
+            if (len(row) > 14 and CODE_RE.match(row[3])
+                    and row[7] and not CODE_RE.match(row[7])):
+                col_code, col_desc, col_units = 3, 7, 14
+                break
+            # Formato inventario: código en col 1, descripción en col 3
+            if (len(row) > 18 and CODE_RE.match(row[1])
+                    and row[3] and not CODE_RE.match(row[3])):
+                col_code, col_desc, col_units = 1, 3, 18
+                break
+
+        if col_code is None:
+            return []
+
+        entries: list[tuple[str, str, str]] = []
+        for row_idx in range(sheet.nrows):
+            row = [str(sheet.cell_value(row_idx, c)).strip() for c in range(sheet.ncols)]
+            if len(row) <= col_units:
+                continue
+            cod = row[col_code]
+            desc = row[col_desc]
+            raw_u = row[col_units]
+            if not CODE_RE.match(cod) or not desc:
+                continue
+            unidades = raw_u.replace(".", ",")
+            entries.append((cod, desc, unidades))
+
+        return entries
 
     @staticmethod
     def _normalize_text(value: str) -> str:

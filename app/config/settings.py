@@ -71,3 +71,9 @@ ONEDRIVE_BI_MEGATIENDAS_BASE: Path | None = (
     _ONEDRIVE_ROOT / "BI" / "Data Clientes" / "TT" / "Nuevo" / "1. B2B" / "Megatiendas"
     if _ONEDRIVE_ROOT else None
 )
+
+# Ruta base en OneDrive para Provecol (Soluciones Prácticas)
+ONEDRIVE_BI_PROVECOL_BASE: Path | None = (
+    _ONEDRIVE_ROOT / "BI" / "Data Clientes" / "TT" / "Nuevo" / "1. B2B" / "Provecol"
+    if _ONEDRIVE_ROOT else None
+)
