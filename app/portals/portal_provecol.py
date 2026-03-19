@@ -45,7 +45,7 @@ class PortalProvecol(BasePortal):
         week, year, month = self._resolve_week_year_month()
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=self._headless_mode())
+            browser = playwright.chromium.launch(headless=self._headless_mode(), channel=settings.BROWSER_CHANNEL)
             context = browser.new_context(accept_downloads=True)
             page = context.new_page()
 

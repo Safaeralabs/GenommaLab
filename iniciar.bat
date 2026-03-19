@@ -39,11 +39,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: Instalar Playwright Chromium si no está (idempotente: lo salta si ya existe)
-echo [3/3] Verificando navegador Chromium...
-python -m playwright install chromium
+:: Usar Microsoft Edge del sistema (hereda VPN/proxy de Windows)
+set RPA_BROWSER_CHANNEL=msedge
+
+:: Instalar dependencias de Playwright para Edge (idempotente)
+echo [3/3] Verificando dependencias del navegador...
+python -m playwright install msedge
 if errorlevel 1 (
-    echo [ERROR] No se pudo instalar Chromium.
+    echo [ERROR] No se pudieron instalar las dependencias del navegador.
     pause
     exit /b 1
 )

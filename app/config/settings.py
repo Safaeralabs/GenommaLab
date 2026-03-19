@@ -46,6 +46,12 @@ HOMOLOGATION_TEMPLATE_PATH = DATA_DIR / HOMOLOGATION_TEMPLATE_NAME
 
 PROVIDERS_SOURCE = os.getenv("PROVIDERS_SOURCE", "catalog").lower()
 
+# Canal del navegador para Playwright.
+# None  → Chromium embebido (por defecto, sin VPN)
+# "msedge" → Edge del sistema (hereda proxy/VPN de Windows, recomendado con VPN)
+# "chrome" → Chrome instalado en el sistema
+BROWSER_CHANNEL: str | None = os.getenv("RPA_BROWSER_CHANNEL") or None
+
 
 def _resolve_onedrive_root() -> Path | None:
     for key in ("ONEDRIVE", "OneDriveCommercial", "OneDriveConsumer"):

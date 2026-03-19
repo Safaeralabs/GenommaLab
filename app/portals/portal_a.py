@@ -62,7 +62,7 @@ class PortalA(BasePortal):
         error_screenshot_path = self._build_screenshot_path("error")
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=self._headless_mode())
+            browser = playwright.chromium.launch(headless=self._headless_mode(), channel=settings.BROWSER_CHANNEL)
             context = browser.new_context(accept_downloads=True)
             page = context.new_page()
             downloaded_files: list[Path] = []
