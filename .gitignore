@@ -1,0 +1,34 @@
+# Entorno virtual
+.venv/
+
+# Credenciales y datos sensibles
+data/providers.json
+data/*.xlsx
+Homologacion.xlsx
+
+# Claude Code settings
+.claude/
+
+# Archivos generados en runtime
+downloads/
+postprocesado/
+logs/
+screenshots/
+capturas_abako/
+eos_consultores_capturas/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Build / distribución
+build/
+dist/
+*.spec
+output/
+build_assets/ms-playwright/
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
