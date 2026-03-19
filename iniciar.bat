@@ -39,17 +39,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: Instalar Playwright Chromium si no está
+:: Instalar Playwright Chromium si no está (idempotente: lo salta si ya existe)
 echo [3/3] Verificando navegador Chromium...
-dir "%LOCALAPPDATA%\ms-playwright\chromium-*" >nul 2>&1
+python -m playwright install chromium
 if errorlevel 1 (
-    echo     Instalando Chromium (solo la primera vez, puede tardar unos minutos)...
-    python -m playwright install chromium
-    if errorlevel 1 (
-        echo [ERROR] No se pudo instalar Chromium.
-        pause
-        exit /b 1
-    )
+    echo [ERROR] No se pudo instalar Chromium.
+    pause
+    exit /b 1
 )
 
 echo.
