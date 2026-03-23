@@ -466,7 +466,7 @@ class HomologationWriter:
         con un código numérico de 6 dígitos.
         """
         import re
-        CODE_RE = re.compile(r"^\d{3,10}$")
+        CODE_RE = re.compile(r"^\d{3,}[A-Za-z]{0,3}$")
 
         # Detectar formato buscando la columna donde aparecen los códigos
         col_code, col_desc, col_units = None, None, None
