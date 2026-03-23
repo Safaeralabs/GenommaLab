@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 from datetime import datetime
 from pathlib import Path
 
@@ -41,6 +42,21 @@ class PortalXeon(BasePortal):
         end_date = self.proveedor.fecha_hasta
         week, year = self._resolve_week_year()
         zona = self._extract_zona()
+
+        # Verificar conectividad VPN antes de lanzar el navegador
+        host, port = self._parse_host_port()
+        if not self._is_reachable(host, port):
+            msg = (
+                f"VPN no activa o portal inaccesible ({host}:{port}). "
+                "Activa la VPN e intenta de nuevo."
+            )
+            self.logger.warning("[%s] %s", self.proveedor.display_name, msg)
+            return ExecutionResult(
+                proveedor=self.proveedor.display_name,
+                portal_tipo=self.proveedor.portal_tipo,
+                success=False,
+                message=msg,
+            )
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=self._headless_mode(), channel=settings.BROWSER_CHANNEL)
@@ -328,6 +344,27 @@ class PortalXeon(BasePortal):
             )
 
     # ── Utilities ─────────────────────────────────────────────────────────────
+
+    def _parse_host_port(self) -> tuple[str, int]:
+        """Extrae host y puerto de la URL principal del proveedor."""
+        url = self.proveedor.login_url.strip()
+        url = re.sub(r"^https?://", "", url).split("/")[0]
+        if ":" in url:
+            host, port_str = url.rsplit(":", 1)
+            try:
+                return host, int(port_str)
+            except ValueError:
+                pass
+        return url, 80
+
+    @staticmethod
+    def _is_reachable(host: str, port: int, timeout: int = 5) -> bool:
+        """Comprueba si el host:port es alcanzable vía TCP (indica VPN activa)."""
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            return False
 
     def _base_url(self) -> str:
         """Normaliza la URL del portal asegurando protocolo y ruta /tat_nuevo/."""
