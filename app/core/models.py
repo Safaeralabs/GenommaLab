@@ -53,6 +53,7 @@ class ExecutionResult:
     success: bool
     message: str
     error_type: str = ""
+    needs_retry: bool = False          # True si la descarga fue parcial y vale la pena reintentar
     screenshot_path: Path | None = None
     downloaded_file: Path | None = None
     downloaded_files: list[Path] = field(default_factory=list)

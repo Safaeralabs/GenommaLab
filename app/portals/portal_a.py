@@ -163,6 +163,7 @@ class PortalA(BasePortal):
                 proveedor=self.proveedor.display_name,
                 portal_tipo=self.proveedor.portal_tipo,
                 success=True,          # permite postprocesado incluso en descarga parcial
+                needs_retry=bool(partial_errors),  # reintento automático si faltó algún archivo
                 message=message,
                 downloaded_file=downloaded_files[0],
                 downloaded_files=downloaded_files,

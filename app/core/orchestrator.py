@@ -214,14 +214,20 @@ class Orchestrator:
                     else:
                         break  # success with no files to validate
 
-                if result.success:
+                if result.success and not result.needs_retry:
                     break
 
                 if attempt < MAX_RETRIES:
-                    self.logger.warning(
-                        "[%s] Intento %d fallido (%s). Reintentando en 5s...",
-                        proveedor.display_name, attempt + 1, result.message[:80],
-                    )
+                    if result.needs_retry:
+                        self.logger.warning(
+                            "[%s] Descarga parcial en intento %d. Reintentando en 5s...",
+                            proveedor.display_name, attempt + 1,
+                        )
+                    else:
+                        self.logger.warning(
+                            "[%s] Intento %d fallido (%s). Reintentando en 5s...",
+                            proveedor.display_name, attempt + 1, result.message[:80],
+                        )
                     time.sleep(5)
 
             return index, proveedor, result
