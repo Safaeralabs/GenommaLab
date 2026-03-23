@@ -173,14 +173,14 @@ class PortalA(BasePortal):
         self._open_sales_filter_modal(page)
         self._configure_sales_search(page)
         self._apply_provider_filter(page, DEFAULT_PROVIDER_FILTER_OPTIONS)
-        return self._export_excel(page)
+        return self._export_excel(page, tipo="ventas")
 
     def _run_inventory_export(self, page: Page) -> Path:
         self._open_inventory_report(page)
         self._open_inventory_filter_modal(page)
         self._configure_inventory_search(page)
         self._apply_provider_filter(page, DEFAULT_PROVIDER_FILTER_OPTIONS)
-        return self._export_excel(page)
+        return self._export_excel(page, tipo="inventario")
 
     def _login(self, page: Page) -> None:
         # Algunos portales muestran una pantalla de seleccion de sede ANTES de las credenciales.
@@ -578,17 +578,21 @@ class PortalA(BasePortal):
         except PlaywrightTimeoutError:
             return None
 
-    def _export_excel(self, page: Page) -> Path:
+    def _export_excel(self, page: Page, tipo: str = "") -> Path:
         self.logger.info("[%s] Exportando archivo Excel.", self.proveedor.display_name)
 
         with page.expect_download(timeout=30000) as download_info:
             page.get_by_text("Exportar", exact=True).first.click()
             page.get_by_text("Excel", exact=True).first.click()
 
-        return self._save_download(download_info.value)
+        return self._save_download(download_info.value, tipo=tipo)
 
-    def _save_download(self, download: Download) -> Path:
-        target_path = self.download_dir / download.suggested_filename
+    def _save_download(self, download: Download, tipo: str = "") -> Path:
+        original = download.suggested_filename
+        if tipo:
+            p = Path(original)
+            original = f"{p.stem}_{tipo}{p.suffix}"
+        target_path = self.download_dir / original
         download.save_as(target_path)
         return target_path
 
