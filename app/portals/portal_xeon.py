@@ -252,32 +252,13 @@ class PortalXeon(BasePortal):
     # ── Navigation ────────────────────────────────────────────────────────────
 
     def _navigate_to_view(self, page: Page, view_key: str, link_text: str) -> None:
-        """Navega a una sección del portal.
-
-        Estrategia 1 (directa): clic en el link con href que contiene view_key.
-        Estrategia 2 (submenú): hover sobre 'Reportes' y clic en el ítem del submenú.
-        """
-        # Estrategia 1: link directo en la home page (ej: href="home.php?view=paretto")
-        direct = page.locator(f"a[href*='view={view_key}']")
-        if direct.count():
-            self.logger.info(
-                "[%s] Navegando a '%s' via link directo (view=%s).",
-                self.proveedor.display_name, link_text, view_key,
-            )
-            direct.first.click()
-            return
-
-        # Estrategia 2: hover sobre el menú Reportes y clic en submenú
+        """Navega directamente a la URL de la vista (home.php?view=<view_key>)."""
+        base = self._base_url()  # termina en '/'
+        url = f"{base}home.php?view={view_key}"
         self.logger.info(
-            "[%s] Link directo no encontrado, usando submenu Reportes → %s.",
-            self.proveedor.display_name, link_text,
+            "[%s] Navegando a %s", self.proveedor.display_name, url,
         )
-        reportes = page.get_by_role("link", name=re.compile(r"^Reportes$", re.IGNORECASE))
-        reportes.hover()
-        page.wait_for_timeout(500)
-        page.locator(
-            f"a:has-text('{link_text}'), li:has-text('{link_text}') > a"
-        ).first.click()
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
     # ── Export ────────────────────────────────────────────────────────────────
 
