@@ -74,6 +74,10 @@ def sync_to_client_onedrive(
         if not item.path.exists():
             continue
         target = target_dir / item.path.name
+        if target.exists():
+            if logger:
+                logger.debug("[OneDrive] Ya existe, omitido: %s", target.name)
+            continue
         try:
             shutil.copy2(item.path, target)
             if logger:
@@ -118,6 +122,10 @@ def sync_downloads_to_hb(
         if not item.path.exists():
             continue
         target = target_dir / item.path.name
+        if target.exists():
+            if logger:
+                logger.debug("[OneDrive/HB] Ya existe, omitido: %s", target.name)
+            continue
         try:
             shutil.copy2(item.path, target)
             if logger:
