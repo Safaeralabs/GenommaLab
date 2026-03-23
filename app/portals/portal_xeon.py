@@ -125,39 +125,16 @@ class PortalXeon(BasePortal):
         self.logger.info("[%s] Abriendo %s", self.proveedor.display_name, login_url)
         page.goto(login_url, wait_until="domcontentloaded", timeout=60000)
 
-        # El campo "Usuario" en el portal espera solo la zona (ej: "BUC"),
-        # no el string completo "225BUC".
-        username = self._extract_username()
-        security_code = self._extract_security_code()
-
         self.logger.info(
-            "[%s] Login → usuario='%s', cod_seg='%s'",
-            self.proveedor.display_name, username, security_code,
+            "[%s] Login → usuario='%s'",
+            self.proveedor.display_name, self.proveedor.usuario,
         )
 
-        # Cód. de Seguridad (primer campo no-password)
-        if security_code:
-            cod_loc = page.locator(
-                "input[name*='cod' i][name*='seg' i], "
-                "input[name='cod_seg'], input[name='codseg'], "
-                "input[name='seguridad'], input[placeholder*='eguridad' i], "
-                "input[placeholder*='ódigo' i], input[placeholder*='odigo' i]"
-            )
-            if cod_loc.count():
-                cod_loc.first.fill(security_code)
-            else:
-                # Fallback: primer input de texto visible
-                inputs = page.locator(
-                    "input:not([type='password']):not([type='hidden']):not([type='submit'])"
-                )
-                if inputs.count() >= 1:
-                    inputs.first.fill(security_code)
-
-        # Usuario
+        # Usuario (valor completo tal como está en providers.json, ej: "225BUC")
         page.locator(
             "input[name='usuario'], input[name='username'], input[name='user'], "
-            "input[placeholder*='suario' i], input[placeholder*='user' i]"
-        ).first.fill(username)
+            "input[placeholder*='suario' i], input[placeholder*='sername' i]"
+        ).first.fill(self.proveedor.usuario)
 
         # Contraseña
         page.locator("input[type='password']").first.fill(self.proveedor.password)
