@@ -72,6 +72,10 @@ class HomologationWriter:
         "producto": "Descripcion_prod",
         "disponible": "Unidades",
         "existencia": "Unidades",
+        # Aliases EOS Consultores (inventario derivado del delta de ventas)
+        "nombreproducto": "Descripcion_prod",
+        "ventaunidades": "Unidades",
+        "ventaunidad": "Unidades",
     }
 
     def __init__(self, logger: logging.Logger) -> None:

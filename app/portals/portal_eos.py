@@ -95,9 +95,16 @@ class PortalEOS(BasePortal):
         renamed = self._rename_file(raw_csv, today)
         self._sync_to_bi_onedrive(renamed, week, year)
 
-        # 2. Calcular delta vs semana anterior → solo filas nuevas para homologación
+        # 2. Calcular delta vs semana anterior → SO (ventas semanales)
         delta_csv = self._compute_week_delta(renamed, week, year)
-        hom_file = delta_csv if delta_csv is not None else renamed
+        ventas_file = delta_csv if delta_csv is not None else renamed
+
+        # 3. Inventario derivado: mismas filas del delta con unidades × 4
+        inv_file = self._build_inventario_csv(ventas_file, week)
+
+        files_for_homologation = [ventas_file]
+        if inv_file is not None:
+            files_for_homologation.append(inv_file)
 
         self.logger.info("[%s] Descarga completada: %s", self.proveedor.display_name, renamed.name)
         return ExecutionResult(
@@ -105,8 +112,8 @@ class PortalEOS(BasePortal):
             portal_tipo=self.proveedor.portal_tipo,
             success=True,
             message=f"Descargado: {renamed.name}",
-            downloaded_file=hom_file,
-            downloaded_files=[hom_file],
+            downloaded_file=ventas_file,
+            downloaded_files=files_for_homologation,
             portal_handled_sync=True,
         )
 
@@ -254,6 +261,55 @@ class PortalEOS(BasePortal):
             writer.writerows(delta_rows)
 
         return delta_path
+
+    def _build_inventario_csv(self, ventas_csv: Path, week: int) -> Path | None:
+        """Genera un CSV de inventario a partir del delta de ventas con unidades × 4.
+
+        El archivo resultante se llama Megatiendas_inventario_S{week}.csv y el
+        clasificador de archivos lo etiquetará como 'inventario' automáticamente.
+        """
+        rows = self._read_csv_rows(ventas_csv)
+        if len(rows) < 2:
+            return None
+
+        header = rows[0]
+
+        # Localizar la columna de unidades (VENTA_UNIDADES o similar)
+        units_col: int | None = None
+        for idx, col in enumerate(header):
+            norm = col.strip().upper().replace("_", "").replace(" ", "")
+            if "VENTAUNIDAD" in norm or norm == "UNIDADES" or norm == "CANTIDAD":
+                units_col = idx
+                break
+
+        if units_col is None:
+            self.logger.warning(
+                "[%s] No se encontró columna de unidades en el delta; inventario omitido.",
+                self.proveedor.display_name,
+            )
+            return None
+
+        inv_rows: list[list[str]] = [header]
+        for row in rows[1:]:
+            new_row = list(row)
+            try:
+                raw = new_row[units_col].strip().replace(",", ".").replace(" ", "")
+                val = float(raw) * 4
+                new_row[units_col] = str(int(val)) if val == int(val) else f"{val:.2f}"
+            except (ValueError, IndexError):
+                pass
+            inv_rows.append(new_row)
+
+        inv_path = ventas_csv.parent / f"Megatiendas_inventario_S{week:02d}.csv"
+        with open(inv_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerows(inv_rows)
+
+        self.logger.info(
+            "[%s] Inventario derivado generado (%d filas, unidades ×4): %s",
+            self.proveedor.display_name, len(inv_rows) - 1, inv_path.name,
+        )
+        return inv_path
 
     def _read_csv_rows(self, csv_path: Path) -> list[list[str]]:
         """Lee todas las filas de un CSV, probando distintos encodings y delimitadores."""
