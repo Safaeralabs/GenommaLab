@@ -440,6 +440,12 @@ class PortalA(BasePortal):
             ", ".join(candidates),
         )
 
+        # Esperar explícitamente a que la cabecera aparezca en el grid (conexiones lentas)
+        try:
+            page.get_by_text("Proveedor", exact=True).first.wait_for(state="visible", timeout=60000)
+        except PlaywrightTimeoutError:
+            pass  # Si no aparece, lo detectará en la siguiente línea con el mensaje claro
+
         provider_headers = self._visible_text_locators(page, "Proveedor")
         if not provider_headers:
             raise RuntimeError("No se encontro la cabecera 'Proveedor' en el grid.")
@@ -831,27 +837,29 @@ class PortalA(BasePortal):
     def _wait_for_grid_load(self, page: Page, timeout_ms: int = 90000) -> None:
         """Espera a que el grid de DevExtreme termine de cargar.
 
-        Intenta detectar el loading panel; si no aparece en 5 s, da un margen
-        mínimo de 2 s para estabilización de la UI.
+        Intenta detectar el loading panel; si no aparece en 8 s (conexión lenta),
+        espera igualmente un margen mínimo de 6 s para que la UI se estabilice.
         """
         load_selector = (
             ".dx-loadpanel-wrapper, .dx-datagrid-load-panel, .dx-loadindicator-icon"
         )
         try:
-            page.wait_for_selector(load_selector, state="visible", timeout=5000)
+            page.wait_for_selector(load_selector, state="visible", timeout=8000)
             self.logger.debug("[%s] Loading indicator detectado, esperando fin de carga.", self.proveedor.display_name)
             page.wait_for_selector(load_selector, state="hidden", timeout=timeout_ms)
+            # Pequeña pausa adicional para que el DOM termine de renderizar
+            page.wait_for_timeout(1500)
         except PlaywrightTimeoutError:
-            # No se detectó indicador: dar margen mínimo de estabilización
-            page.wait_for_timeout(2000)
+            # No se detectó indicador de carga: dar margen generoso de estabilización
+            page.wait_for_timeout(6000)
 
-    def _wait_for_filter_results(self, page: Page, timeout_ms: int = 10000) -> None:
+    def _wait_for_filter_results(self, page: Page, timeout_ms: int = 20000) -> None:
         """Espera a que el dropdown del filtro de proveedor muestre resultados."""
         filter_list_selector = ".dx-list-item, .dx-checkbox-container, .dx-filterbuilder-item"
         try:
             page.wait_for_selector(filter_list_selector, state="visible", timeout=timeout_ms)
         except PlaywrightTimeoutError:
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(3000)
 
     def _recover_to_home(self, page: Page) -> None:
         """Intenta volver a la pantalla principal tras un error en una exportación."""
