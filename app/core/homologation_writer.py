@@ -102,7 +102,7 @@ class HomologationWriter:
                         descripcion=desc,
                         unidades=unidades,
                         cadena=proveedor.proveedor,
-                        cod_local=proveedor.carpeta or proveedor.display_name,
+                        cod_local="",
                         descripcion_local=proveedor.sede_subportal or proveedor.display_name,
                         zonalocal=proveedor.sede_subportal or "",
                     )
