@@ -61,11 +61,27 @@ def _resolve_onedrive_root() -> Path | None:
     return None
 
 
+def _resolve_onedrive_data_clientes(onedrive_root: Path | None) -> Path | None:
+    """Busca la carpeta 'Archivos de * - Data Clientes' dentro del raíz de OneDrive."""
+    if onedrive_root is None:
+        return None
+    try:
+        for child in onedrive_root.iterdir():
+            if child.is_dir() and "Data Clientes" in child.name:
+                return child
+    except OSError:
+        pass
+    return None
+
+
 _ONEDRIVE_ROOT = _resolve_onedrive_root()
 ONEDRIVE_SYNC_DIR = _ONEDRIVE_ROOT / APP_NAME if _ONEDRIVE_ROOT else None
 
-# Carpeta HB en OneDrive donde se depositan los archivos por cliente.
-# Se puede sobreescribir con la variable de entorno ONEDRIVE_HB_PATH.
+# Raíz de "Data Clientes" en OneDrive (detectada automáticamente).
+# Ejemplo: C:\Users\nicot\OneDrive - genommalabinternacional\Archivos de Cristian Javier Sanchez Yepez - Data Clientes
+ONEDRIVE_DATA_CLIENTES_BASE: Path | None = _resolve_onedrive_data_clientes(_ONEDRIVE_ROOT)
+
+# Carpeta HB en OneDrive (legacy, usado como fallback si no hay OneDrive_carpeta configurado).
 ONEDRIVE_HB_DIR: Path | None = (
     Path(os.getenv("ONEDRIVE_HB_PATH"))
     if os.getenv("ONEDRIVE_HB_PATH")
@@ -74,12 +90,12 @@ ONEDRIVE_HB_DIR: Path | None = (
 
 # Ruta base en OneDrive para Megatiendas (EOS Consultores)
 ONEDRIVE_BI_MEGATIENDAS_BASE: Path | None = (
-    _ONEDRIVE_ROOT / "BI" / "Data Clientes" / "TT" / "Nuevo" / "1. B2B" / "Megatiendas"
-    if _ONEDRIVE_ROOT else None
+    ONEDRIVE_DATA_CLIENTES_BASE / "TT" / "Nuevo" / "1. B2B" / "Megatiendas"
+    if ONEDRIVE_DATA_CLIENTES_BASE else None
 )
 
 # Ruta base en OneDrive para Provecol (Soluciones Prácticas)
 ONEDRIVE_BI_PROVECOL_BASE: Path | None = (
-    _ONEDRIVE_ROOT / "BI" / "Data Clientes" / "TT" / "Nuevo" / "1. B2B" / "Provecol"
-    if _ONEDRIVE_ROOT else None
+    ONEDRIVE_DATA_CLIENTES_BASE / "TT" / "Nuevo" / "1. B2B" / "Provecol"
+    if ONEDRIVE_DATA_CLIENTES_BASE else None
 )

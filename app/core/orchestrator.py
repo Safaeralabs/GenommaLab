@@ -20,7 +20,7 @@ from app.portals.portal_b import PortalB
 from app.portals.portal_eos import PortalEOS
 from app.portals.portal_provecol import PortalProvecol
 from app.portals.portal_xeon import PortalXeon
-from app.utils.onedrive_sync import sync_downloads_to_hb, sync_paths_to_onedrive
+from app.utils.onedrive_sync import sync_downloads_to_hb, sync_paths_to_onedrive, sync_to_client_onedrive
 
 
 StatusCallback = Callable[[str], None]
@@ -308,13 +308,22 @@ class Orchestrator:
 
         result.organized_files = organized_files
         if not result.portal_handled_sync:
-            sync_downloads_to_hb(
-                organized_files,
-                proveedor.proveedor,
-                year,
-                week,
-                self.logger,
-            )
+            if proveedor.onedrive_path:
+                sync_to_client_onedrive(
+                    organized_files,
+                    proveedor.onedrive_path,
+                    year,
+                    week,
+                    self.logger,
+                )
+            else:
+                sync_downloads_to_hb(
+                    organized_files,
+                    proveedor.proveedor,
+                    year,
+                    week,
+                    self.logger,
+                )
         try:
             rows = self.homologation_writer.collect_rows(proveedor, organized_files)
             self.homologation_rows.extend(rows)

@@ -62,6 +62,7 @@ class ProviderLoader:
                 fecha_desde=ExcelReader._as_text(self._find_value(normalized, ("fecha_desde", "fecha"))),
                 fecha_hasta=ExcelReader._as_text(self._find_value(normalized, ("fecha_hasta", "hasta"))),
                 carpeta=ExcelReader._as_text(self._find_value(normalized, ("carpeta", "folder"))),
+                onedrive_path=ExcelReader._as_text(self._find_value(normalized, ("onedrive_carpeta", "onedrive_path"))),
                 sede_subportal=ExcelReader._as_text(self._find_value(normalized, ("sede_subportal", "sede"))),
                 requiere_revision=ExcelReader._as_bool(self._find_value(normalized, ("requiere_revision", "requiere_rev", "revision"))),
                 notas_operativas=ExcelReader._as_text(self._find_value(normalized, ("notas_operativas", "notas"))),

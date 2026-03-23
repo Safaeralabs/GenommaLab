@@ -20,6 +20,7 @@ class Proveedor:
     fecha_desde: str
     fecha_hasta: str
     carpeta: str
+    onedrive_path: str = ""
     sede_subportal: str = ""
     requiere_revision: bool = False
     notas_operativas: str = ""

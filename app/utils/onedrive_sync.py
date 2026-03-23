@@ -46,6 +46,46 @@ def sync_paths_to_onedrive(
             logger.info("[OneDrive] Copiado %s -> %s", file_path.name, target)
 
 
+def sync_to_client_onedrive(
+    organized_files: list[OrganizedFile],
+    onedrive_path: str,
+    year: int,
+    week: int,
+    logger: logging.Logger | None = None,
+) -> None:
+    """Copy organized files to OneDrive/Data Clientes/{onedrive_path}/{year}/S{week}_{year}/."""
+    base = settings.ONEDRIVE_DATA_CLIENTES_BASE
+    if base is None:
+        if logger:
+            logger.debug("[OneDrive] ONEDRIVE_DATA_CLIENTES_BASE no detectado, sync omitido.")
+        return
+
+    week_folder = f"S{week:02d}_{year}"
+    target_dir = base / onedrive_path / str(year) / week_folder
+
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        if logger:
+            logger.warning("[OneDrive] No se pudo crear carpeta %s: %s", target_dir, exc)
+        return
+
+    for item in organized_files:
+        if not item.path.exists():
+            continue
+        target = target_dir / item.path.name
+        try:
+            shutil.copy2(item.path, target)
+            if logger:
+                logger.info(
+                    "[OneDrive] %s -> .../%s/%s/%s/%s",
+                    item.path.name, onedrive_path, year, week_folder, item.path.name,
+                )
+        except OSError as exc:
+            if logger:
+                logger.warning("[OneDrive] Error copiando %s: %s", item.path.name, exc)
+
+
 def sync_downloads_to_hb(
     organized_files: list[OrganizedFile],
     client_folder: str,
