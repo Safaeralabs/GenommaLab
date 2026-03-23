@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
+import os
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -129,53 +131,74 @@ class Orchestrator:
         )
 
         start_date, end_date = self._week_to_iso_range(year, week)
-        for index, proveedor in enumerate(providers, start=1):
-            if self.stop_event.is_set():
-                self.logger.warning("Ejecucion cancelada antes de procesar %s.", proveedor.display_name)
-                break
-            self.callbacks.on_status(f"Procesando {proveedor.display_name} ({index}/{total})")
-            self.logger.info(
-                "[%s/%s] Iniciando proveedor '%s' con portal '%s'.",
-                index,
-                total,
-                proveedor.display_name,
-                proveedor.portal_tipo,
-            )
+        max_workers = int(os.getenv("RPA_MAX_WORKERS", "4"))
 
-            if proveedor.requiere_revision:
+        execution_providers = [
+            replace(p, fecha_desde=start_date, fecha_hasta=end_date)
+            for p in providers
+        ]
+
+        # Log warnings for providers requiring revision
+        for p in execution_providers:
+            if p.requiere_revision:
                 self.logger.warning(
                     "[%s] Registro marcado para revision. Conflictos: %s",
-                    proveedor.display_name,
-                    proveedor.conflictos_detectados or "Sin detalle informado.",
+                    p.display_name,
+                    p.conflictos_detectados or "Sin detalle informado.",
                 )
 
-            execution_proveedor = replace(
-                proveedor,
-                fecha_desde=start_date,
-                fecha_hasta=end_date,
+        def _download_one(args: tuple[int, Proveedor]) -> tuple[int, Proveedor, ExecutionResult]:
+            index, proveedor = args
+            if self.stop_event.is_set():
+                return index, proveedor, ExecutionResult(
+                    proveedor=proveedor.display_name,
+                    portal_tipo=proveedor.portal_tipo,
+                    success=False,
+                    message="Ejecución cancelada.",
+                )
+            self.logger.info(
+                "[%s/%s] Iniciando descarga '%s' (portal '%s').",
+                index, total, proveedor.display_name, proveedor.portal_tipo,
             )
-            result: ExecutionResult | None = None
-
             try:
-                result = self._run_provider(execution_proveedor)
+                return index, proveedor, self._run_provider(proveedor)
+            except Exception as exc:
+                self.logger.exception(
+                    "[%s] Error no controlado durante descarga: %s", proveedor.display_name, exc
+                )
+                return index, proveedor, ExecutionResult(
+                    proveedor=proveedor.display_name,
+                    portal_tipo=proveedor.portal_tipo,
+                    success=False,
+                    message=str(exc),
+                )
+
+        self.callbacks.on_status(f"Descargando {total} proveedores en paralelo (workers: {max_workers})…")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            download_results = list(executor.map(_download_one, enumerate(execution_providers, start=1)))
+
+        # Post-process sequentially to avoid file/homologation conflicts
+        for index, execution_proveedor, result in download_results:
+            self.callbacks.on_status(f"Postprocesando {execution_proveedor.display_name} ({index}/{total})")
+            try:
                 if result.success:
                     result = self._run_postprocess(execution_proveedor, result, year, week)
                 if result.success:
                     success_count += 1
-                    self.logger.info("[%s] OK - %s", proveedor.display_name, result.message)
+                    self.logger.info("[%s] OK - %s", execution_proveedor.display_name, result.message)
                 else:
                     failure_count += 1
-                    self.logger.error("[%s] ERROR - %s", proveedor.display_name, result.message)
+                    self.logger.error("[%s] ERROR - %s", execution_proveedor.display_name, result.message)
                     if result.screenshot_path is not None:
                         self.logger.error(
                             "[%s] Screenshot guardado en %s",
-                            proveedor.display_name,
+                            execution_proveedor.display_name,
                             result.screenshot_path,
                         )
                     self.last_failed_providers.append(execution_proveedor)
                     self.last_error_details.append(
                         ExecutionErrorDetail(
-                            proveedor=proveedor.display_name,
+                            proveedor=execution_proveedor.display_name,
                             message=result.message,
                             screenshot=result.screenshot_path,
                             proveedor_obj=execution_proveedor,
@@ -185,9 +208,7 @@ class Orchestrator:
             except Exception as exc:
                 failure_count += 1
                 self.logger.exception(
-                    "[%s] Error no controlado durante la ejecucion: %s",
-                    proveedor.display_name,
-                    exc,
+                    "[%s] Error no controlado en postprocesado: %s", execution_proveedor.display_name, exc
                 )
                 self.last_failed_providers.append(execution_proveedor)
                 self.last_error_details.append(
@@ -206,8 +227,7 @@ class Orchestrator:
                     message=str(exc),
                 )
             finally:
-                if result is not None:
-                    self.callbacks.on_result(result)
+                self.callbacks.on_result(result)
                 self.callbacks.on_progress(index, total)
 
         summary = ExecutionSummary(
