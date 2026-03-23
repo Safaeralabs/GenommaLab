@@ -124,6 +124,9 @@ class HomologationWriter:
         filename = f"Homologaciones_S{week:02d}_{year}.xlsx"
         target_path = settings.POSTPROCESSED_DIR / filename
 
+        # Build a set of (cadena, tipo) pairs being updated so we only replace
+        # the specific types provided — partial re-runs don't erase the other type.
+        updating_cadena_tipos: set[tuple[str, str]] = {(row.cadena, row.tipo) for row in rows}
         updating_cadenas = {row.cadena for row in rows}
 
         if target_path.exists():
@@ -134,15 +137,17 @@ class HomologationWriter:
             else:
                 sheet = workbook.active
 
-            # Read existing data rows (skip header row 1), keeping only rows
-            # whose Cadena is NOT being updated now.
+            # Keep rows whose cadena is not being updated, OR whose cadena is
+            # being updated but its tipo is NOT included in the new data.
+            # This allows partial re-runs (e.g. only ventas) to preserve
+            # previously loaded data of the other type (e.g. inventario).
             kept_rows: list[tuple] = []
             for row_values in sheet.iter_rows(min_row=2, values_only=True):
                 if not row_values or all(v is None for v in row_values):
                     continue
-                # Cadena is column E (index 4, 0-based)
                 existing_cadena = row_values[_CADENA_COL_IDX - 1]
-                if existing_cadena not in updating_cadenas:
+                existing_tipo = row_values[2]  # Tipo is column C (index 2, 0-based)
+                if (existing_cadena, existing_tipo) not in updating_cadena_tipos:
                     kept_rows.append(row_values)
 
             # Clear all rows after the header, then rewrite kept + new rows
