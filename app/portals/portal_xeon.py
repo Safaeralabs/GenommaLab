@@ -155,7 +155,7 @@ class PortalXeon(BasePortal):
 
         # Usuario
         page.locator(
-            "input[name='usuario'], input[name='user'], "
+            "input[name='usuario'], input[name='username'], input[name='user'], "
             "input[placeholder*='suario' i], input[placeholder*='user' i]"
         ).first.fill(username)
 
@@ -385,11 +385,14 @@ class PortalXeon(BasePortal):
             url = "http://" + url
         if not url.endswith("/"):
             url += "/"
-        # Solo añadir /tat_nuevo/ si el host es una IP (sin letras en el hostname)
+        # Solo añadir /tat_nuevo/ si el host es una IP Y la URL no tiene path propio.
+        # Portales con path explícito (p.ej. /mensuli_base/) no necesitan sufijo.
         from urllib.parse import urlparse
-        host = urlparse(url).hostname or ""
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        path = parsed.path.strip("/")
         _IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
-        if _IP_RE.match(host) and "tat_nuevo" not in url:
+        if _IP_RE.match(host) and not path:
             url += "tat_nuevo/"
         return url
 
