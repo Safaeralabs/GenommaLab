@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import os
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -22,7 +23,10 @@ from app.portals.portal_b import PortalB
 from app.portals.portal_eos import PortalEOS
 from app.portals.portal_provecol import PortalProvecol
 from app.portals.portal_xeon import PortalXeon
+from app.utils.download_validator import validate_download
 from app.utils.onedrive_sync import sync_downloads_to_hb, sync_paths_to_onedrive, sync_to_client_onedrive
+from app.core.history_manager import save_execution
+from app.utils.notifier import send_completion_email
 
 
 StatusCallback = Callable[[str], None]
@@ -160,18 +164,67 @@ class Orchestrator:
                 "[%s/%s] Iniciando descarga '%s' (portal '%s').",
                 index, total, proveedor.display_name, proveedor.portal_tipo,
             )
-            try:
-                return index, proveedor, self._run_provider(proveedor)
-            except Exception as exc:
-                self.logger.exception(
-                    "[%s] Error no controlado durante descarga: %s", proveedor.display_name, exc
-                )
-                return index, proveedor, ExecutionResult(
-                    proveedor=proveedor.display_name,
-                    portal_tipo=proveedor.portal_tipo,
-                    success=False,
-                    message=str(exc),
-                )
+
+            MAX_RETRIES = int(os.getenv("RPA_MAX_RETRIES", "2"))
+
+            result = None
+            for attempt in range(MAX_RETRIES + 1):
+                current_proveedor = proveedor
+                # On retry, try URL alternativa if available
+                if attempt > 0 and proveedor.url_alternativa:
+                    current_proveedor = replace(proveedor, login_url=proveedor.url_alternativa)
+                    self.logger.info(
+                        "[%s] Reintento %d/%d usando URL alternativa: %s",
+                        proveedor.display_name, attempt, MAX_RETRIES, proveedor.url_alternativa,
+                    )
+                elif attempt > 0:
+                    self.logger.info(
+                        "[%s] Reintento %d/%d...",
+                        proveedor.display_name, attempt, MAX_RETRIES,
+                    )
+
+                try:
+                    result = self._run_provider(current_proveedor)
+                except Exception as exc:
+                    self.logger.exception("[%s] Error no controlado: %s", proveedor.display_name, exc)
+                    result = ExecutionResult(
+                        proveedor=proveedor.display_name,
+                        portal_tipo=proveedor.portal_tipo,
+                        success=False,
+                        message=str(exc),
+                        error_type="unknown",
+                    )
+
+                if result.success:
+                    # Validate downloaded files
+                    if result.downloaded_files:
+                        invalid = []
+                        for f in result.downloaded_files:
+                            ok, reason = validate_download(f)
+                            if not ok:
+                                invalid.append(f"{f.name}: {reason}")
+                        if invalid:
+                            result = ExecutionResult(
+                                proveedor=proveedor.display_name,
+                                portal_tipo=proveedor.portal_tipo,
+                                success=False,
+                                message=" | ".join(invalid),
+                                error_type="validation_failed",
+                            )
+                    else:
+                        break  # success with no files to validate
+
+                if result.success:
+                    break
+
+                if attempt < MAX_RETRIES:
+                    self.logger.warning(
+                        "[%s] Intento %d fallido (%s). Reintentando en 5s...",
+                        proveedor.display_name, attempt + 1, result.message[:80],
+                    )
+                    time.sleep(5)
+
+            return index, proveedor, result
 
         self.callbacks.on_status(f"Descargando {total} proveedores en paralelo (workers: {max_workers})…")
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -268,6 +321,27 @@ class Orchestrator:
         else:
             self.callbacks.on_errors(self.last_error_details)
             self.callbacks.on_last_homologation(None)
+        save_execution(
+            year=year,
+            week=week,
+            total=total,
+            success_count=success_count,
+            failure_count=failure_count,
+            duration_seconds=(summary.finished_at - summary.started_at).total_seconds(),
+            failed_providers=[p.display_name for p in self.last_failed_providers],
+            homologation_rows=len(self.homologation_rows),
+            logger=self.logger,
+        )
+        send_completion_email(
+            year=year,
+            week=week,
+            total=total,
+            success_count=success_count,
+            failure_count=failure_count,
+            failed_providers=[p.display_name for p in self.last_failed_providers],
+            homologation_path=self.last_homologation_path,
+            logger=self.logger,
+        )
         return summary
 
     def _publish_errors(self) -> None:

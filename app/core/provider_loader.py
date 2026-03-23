@@ -57,6 +57,7 @@ class ProviderLoader:
                 portal_tipo=portal_tipo,
                 portal_origen=portal_origen,
                 login_url=ExcelReader._as_text(self._find_value(normalized, ("url_principal", "login_url", "url"))),
+                url_alternativa=ExcelReader._as_text(self._find_value(normalized, ("url_alternativa", "url_alt", "alternativa"))),
                 usuario=ExcelReader._as_text(self._find_value(normalized, ("usuario", "user"))),
                 password=ExcelReader._as_text(self._find_value(normalized, ("password", "pass"))),
                 fecha_desde=ExcelReader._as_text(self._find_value(normalized, ("fecha_desde", "fecha"))),

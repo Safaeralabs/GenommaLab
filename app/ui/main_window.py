@@ -13,6 +13,7 @@ from tkinter import messagebox, ttk
 from typing import Sequence
 
 from app.config import settings
+from app.core.history_manager import load_history
 from app.core.logger_manager import configure_logging
 from app.core.models import ExecutionErrorDetail, ExecutionResult, ExecutionSummary, HomologationSummary, Proveedor
 from app.core.orchestrator import Orchestrator, UiCallbacks
@@ -599,6 +600,7 @@ class MainWindow:
         panel.rowconfigure(0, weight=0)   # results – fixed height
         panel.rowconfigure(1, weight=1)   # log     – expands
         panel.rowconfigure(2, weight=0)   # errors  – fixed height
+        panel.rowconfigure(3, weight=0)   # history – fixed height
 
         # ── row 0: Archivos generados ──────────────────────────────────────────
         result_frame = ttk.LabelFrame(panel, text="Archivos generados")
@@ -691,6 +693,77 @@ class MainWindow:
             command=self._retry_errors, state=tk.DISABLED,
         )
         self.retry_errors_button.pack(side=tk.RIGHT)
+
+        # ── row 3: Historial ──────────────────────────────────────────────────
+        self._build_history_panel(panel)
+
+    def _build_history_panel(self, parent: tk.Frame) -> None:
+        """Build the execution history LabelFrame (row 3 of right panel)."""
+        history_frame = ttk.LabelFrame(parent, text="Historial de ejecuciones")
+        history_frame.grid(row=3, column=0, sticky="ew", pady=(0, 4))
+        history_frame.rowconfigure(0, weight=1)
+        history_frame.columnconfigure(0, weight=1)
+
+        hist_columns = ("fecha", "semana", "ok", "fallidos", "duracion", "filas_homol")
+        self.history_tree = ttk.Treeview(
+            history_frame, columns=hist_columns, show="headings",
+            height=4, selectmode="none",
+        )
+        self.history_tree.heading("fecha",       text="Fecha")
+        self.history_tree.heading("semana",      text="Semana")
+        self.history_tree.heading("ok",          text="OK")
+        self.history_tree.heading("fallidos",    text="Fallidos")
+        self.history_tree.heading("duracion",    text="Duración")
+        self.history_tree.heading("filas_homol", text="Filas Homol.")
+        self.history_tree.column("fecha",       width=145, anchor="w")
+        self.history_tree.column("semana",      width=70,  anchor="center")
+        self.history_tree.column("ok",          width=50,  anchor="center")
+        self.history_tree.column("fallidos",    width=60,  anchor="center")
+        self.history_tree.column("duracion",    width=75,  anchor="center")
+        self.history_tree.column("filas_homol", width=90,  anchor="center")
+        self.history_tree.grid(row=0, column=0, sticky="nsew")
+
+        hist_scroll = ttk.Scrollbar(history_frame, orient="vertical", command=self.history_tree.yview)
+        hist_scroll.grid(row=0, column=1, sticky="ns")
+        self.history_tree.configure(yscrollcommand=hist_scroll.set)
+
+        hist_actions = tk.Frame(history_frame, bg=CLR_SURFACE)
+        hist_actions.grid(row=1, column=0, columnspan=2, sticky="ew", padx=4, pady=(4, 6))
+
+        ttk.Button(
+            hist_actions, text="Actualizar",
+            command=self._refresh_history,
+        ).pack(side=tk.LEFT)
+
+        # Populate on build
+        self._refresh_history()
+
+    def _refresh_history(self) -> None:
+        """Load history entries and populate the history treeview."""
+        for item in self.history_tree.get_children():
+            self.history_tree.delete(item)
+        try:
+            entries = load_history()
+        except Exception:
+            entries = []
+        for entry in entries:
+            ts = entry.get("timestamp", "")
+            year = entry.get("year", "")
+            week = entry.get("week", "")
+            semana = f"S{week:02d}/{year}" if isinstance(week, int) and isinstance(year, int) else f"S{week}/{year}"
+            ok = entry.get("success", "")
+            failed = entry.get("failed", "")
+            duration_s = entry.get("duration_s", 0)
+            if isinstance(duration_s, (int, float)):
+                mins, secs = divmod(int(duration_s), 60)
+                duracion = f"{mins}m {secs:02d}s"
+            else:
+                duracion = str(duration_s)
+            homol_rows = entry.get("homologation_rows", "")
+            self.history_tree.insert(
+                "", tk.END,
+                values=(ts, semana, ok, failed, duracion, homol_rows),
+            )
 
     # ── Helper: tarjeta ───────────────────────────────────────────────────────
 

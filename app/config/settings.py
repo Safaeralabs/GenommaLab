@@ -99,3 +99,12 @@ ONEDRIVE_BI_PROVECOL_BASE: Path | None = (
     ONEDRIVE_DATA_CLIENTES_BASE / "TT" / "Nuevo" / "1. B2B" / "Provecol"
     if ONEDRIVE_DATA_CLIENTES_BASE else None
 )
+
+# ── Notificación por email ────────────────────────────────────────────────────
+# Configurar con variables de entorno o directamente aquí.
+NOTIFY_EMAIL: str = os.getenv("RPA_NOTIFY_EMAIL", "")
+SMTP_HOST:    str = os.getenv("RPA_SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT:    int = int(os.getenv("RPA_SMTP_PORT", "587"))
+SMTP_USER:    str = os.getenv("RPA_SMTP_USER", "")
+SMTP_PASS:    str = os.getenv("RPA_SMTP_PASS", "")
+SMTP_TLS:     bool = os.getenv("RPA_SMTP_TLS", "1").strip() in {"1", "true", "yes"}

@@ -21,6 +21,7 @@ class Proveedor:
     fecha_hasta: str
     carpeta: str
     onedrive_path: str = ""
+    url_alternativa: str = ""
     sede_subportal: str = ""
     requiere_revision: bool = False
     notas_operativas: str = ""
@@ -51,6 +52,7 @@ class ExecutionResult:
     portal_tipo: str
     success: bool
     message: str
+    error_type: str = ""
     screenshot_path: Path | None = None
     downloaded_file: Path | None = None
     downloaded_files: list[Path] = field(default_factory=list)
