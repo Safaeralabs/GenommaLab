@@ -17,6 +17,7 @@ from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
+from app.config import settings
 from app.core.models import ExecutionResult, Proveedor
 from app.portals.base_portal import BasePortal
 
