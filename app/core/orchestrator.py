@@ -35,6 +35,7 @@ SummaryCallback = Callable[[ExecutionSummary], None]
 ErrorsCallback = Callable[[list[ExecutionErrorDetail]], None]
 HomologationCallback = Callable[[HomologationSummary | None], None]
 ResultCallback = Callable[[ExecutionResult], None]
+WorkerStatusCallback = Callable[[str, str], None]  # (proveedor_display_name, status_text)
 
 
 @dataclass(slots=True)
@@ -47,6 +48,7 @@ class UiCallbacks:
     on_errors: ErrorsCallback
     on_last_homologation: HomologationCallback
     on_result: ResultCallback
+    on_worker_status: WorkerStatusCallback
 
 
 class Orchestrator:
@@ -154,6 +156,7 @@ class Orchestrator:
         def _download_one(args: tuple[int, Proveedor]) -> tuple[int, Proveedor, ExecutionResult]:
             index, proveedor = args
             if self.stop_event.is_set():
+                self.callbacks.on_worker_status(proveedor.display_name, "cancelado")
                 return index, proveedor, ExecutionResult(
                     proveedor=proveedor.display_name,
                     portal_tipo=proveedor.portal_tipo,
@@ -164,6 +167,7 @@ class Orchestrator:
                 "[%s/%s] Iniciando descarga '%s' (portal '%s').",
                 index, total, proveedor.display_name, proveedor.portal_tipo,
             )
+            self.callbacks.on_worker_status(proveedor.display_name, "iniciando...")
 
             MAX_RETRIES = int(os.getenv("RPA_MAX_RETRIES", "2"))
 
@@ -177,11 +181,21 @@ class Orchestrator:
                         "[%s] Reintento %d/%d usando URL alternativa: %s",
                         proveedor.display_name, attempt, MAX_RETRIES, proveedor.url_alternativa,
                     )
+                    self.callbacks.on_worker_status(
+                        proveedor.display_name,
+                        f"reintento {attempt}/{MAX_RETRIES} (URL alternativa)...",
+                    )
                 elif attempt > 0:
                     self.logger.info(
                         "[%s] Reintento %d/%d...",
                         proveedor.display_name, attempt, MAX_RETRIES,
                     )
+                    self.callbacks.on_worker_status(
+                        proveedor.display_name,
+                        f"reintento {attempt}/{MAX_RETRIES}...",
+                    )
+                else:
+                    self.callbacks.on_worker_status(proveedor.display_name, "descargando...")
 
                 try:
                     result = self._run_provider(current_proveedor)
@@ -198,6 +212,7 @@ class Orchestrator:
                 if result.success:
                     # Validate downloaded files
                     if result.downloaded_files:
+                        self.callbacks.on_worker_status(proveedor.display_name, "validando archivos...")
                         invalid = []
                         for f in result.downloaded_files:
                             ok, reason = validate_download(f)
@@ -228,6 +243,7 @@ class Orchestrator:
                             "[%s] Intento %d fallido (%s). Reintentando en 5s...",
                             proveedor.display_name, attempt + 1, result.message[:80],
                         )
+                    self.callbacks.on_worker_status(proveedor.display_name, "esperando reintento...")
                     time.sleep(5)
 
             return index, proveedor, result
@@ -239,6 +255,7 @@ class Orchestrator:
         # Post-process sequentially to avoid file/homologation conflicts
         for index, execution_proveedor, result in download_results:
             self.callbacks.on_status(f"Postprocesando {execution_proveedor.display_name} ({index}/{total})")
+            self.callbacks.on_worker_status(execution_proveedor.display_name, "postprocesando...")
             try:
                 if result.success:
                     result = self._run_postprocess(execution_proveedor, result, year, week)

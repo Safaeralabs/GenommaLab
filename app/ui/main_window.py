@@ -622,6 +622,7 @@ class MainWindow:
         self.result_tree.tag_configure("ok", background=CLR_SUCCESS_ROW)
         self.result_tree.tag_configure("partial", background="#FEF9C3")
         self.result_tree.tag_configure("error", background=CLR_ERROR_ROW)
+        self.result_tree.tag_configure("running", background="#DBEAFE")  # azul claro = en curso
         self.result_tree.grid(row=0, column=0, sticky="nsew")
 
         result_scroll = ttk.Scrollbar(result_frame, orient="vertical", command=self.result_tree.yview)
@@ -817,6 +818,7 @@ class MainWindow:
             on_errors=lambda errors: self.root.after(0, self._handle_errors, errors),
             on_last_homologation=lambda path: self.root.after(0, self._handle_last_homologation, path),
             on_result=lambda result: self.root.after(0, self._handle_provider_result, result),
+            on_worker_status=lambda name, status: self.root.after(0, self._handle_worker_status, name, status),
         )
         orchestrator = Orchestrator(logger=self.logger, callbacks=callbacks, stop_event=self.stop_event)
 
@@ -866,6 +868,7 @@ class MainWindow:
             on_errors=lambda errors: self.root.after(0, self._handle_errors, errors),
             on_last_homologation=lambda path: self.root.after(0, self._handle_last_homologation, path),
             on_result=lambda result: self.root.after(0, self._handle_provider_result, result),
+            on_worker_status=lambda name, status: self.root.after(0, self._handle_worker_status, name, status),
         )
         orchestrator = Orchestrator(logger=self.logger, callbacks=callbacks, stop_event=self.stop_event)
         self.worker_thread = threading.Thread(
@@ -956,6 +959,19 @@ class MainWindow:
 
     def _handle_provider_result(self, result: ExecutionResult) -> None:
         self._update_result_tree(result)
+
+    def _handle_worker_status(self, name: str, status: str) -> None:
+        """Actualiza (o crea) la fila del proveedor con el estado actual del worker."""
+        item_id = self.result_entries.get(name)
+        values = (name, f"⏳ {status}", "")
+        if item_id and item_id in self.result_tree.get_children():
+            # Solo actualiza si la fila sigue siendo "running" (no sobreescribir resultado final)
+            current_tag = self.result_tree.item(item_id, "tags")
+            if current_tag and current_tag[0] == "running":
+                self.result_tree.item(item_id, values=values)
+        else:
+            new_id = self.result_tree.insert("", "end", values=values, tags=("running",))
+            self.result_entries[name] = new_id
 
     def _update_result_tree(self, result: ExecutionResult) -> None:
         # 1) Preferir organized_files (postprocesado completo)

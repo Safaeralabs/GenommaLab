@@ -125,17 +125,17 @@ class PortalXeon(BasePortal):
         self.logger.info("[%s] Abriendo %s", self.proveedor.display_name, login_url)
         page.goto(login_url, wait_until="domcontentloaded", timeout=60000)
 
-        # Usuario
-        page.locator(
-            "input[name='usuario'], input[name='user'], "
-            "input[placeholder*='suario' i], input[placeholder*='user' i]"
-        ).first.fill(self.proveedor.usuario)
-
-        # Contraseña
-        page.locator("input[type='password']").first.fill(self.proveedor.password)
-
-        # Cód. de Seguridad – extraído de los dígitos iniciales del usuario (ej: "225BUC" → "225")
+        # El campo "Usuario" en el portal espera solo la zona (ej: "BUC"),
+        # no el string completo "225BUC".
+        username = self._extract_username()
         security_code = self._extract_security_code()
+
+        self.logger.info(
+            "[%s] Login → usuario='%s', cod_seg='%s'",
+            self.proveedor.display_name, username, security_code,
+        )
+
+        # Cód. de Seguridad (primer campo no-password)
         if security_code:
             cod_loc = page.locator(
                 "input[name*='cod' i][name*='seg' i], "
@@ -146,12 +146,21 @@ class PortalXeon(BasePortal):
             if cod_loc.count():
                 cod_loc.first.fill(security_code)
             else:
-                # Fallback: tercer input de texto visible
+                # Fallback: primer input de texto visible
                 inputs = page.locator(
                     "input:not([type='password']):not([type='hidden']):not([type='submit'])"
                 )
-                if inputs.count() >= 3:
-                    inputs.nth(2).fill(security_code)
+                if inputs.count() >= 1:
+                    inputs.first.fill(security_code)
+
+        # Usuario
+        page.locator(
+            "input[name='usuario'], input[name='user'], "
+            "input[placeholder*='suario' i], input[placeholder*='user' i]"
+        ).first.fill(username)
+
+        # Contraseña
+        page.locator("input[type='password']").first.fill(self.proveedor.password)
 
         page.get_by_text("Ingresar", exact=False).click()
         page.wait_for_url("**/home.php**", timeout=30000)
@@ -367,13 +376,20 @@ class PortalXeon(BasePortal):
             return False
 
     def _base_url(self) -> str:
-        """Normaliza la URL del portal asegurando protocolo y ruta /tat_nuevo/."""
+        """Normaliza la URL del portal asegurando protocolo.
+        Solo añade /tat_nuevo/ si el host es una dirección IP (portales TAT con IP directa).
+        Los portales con dominio con nombre (p.ej. base.mensuli.com) ya sirven el login en la raíz.
+        """
         url = self.proveedor.login_url.strip()
         if not url.startswith(("http://", "https://")):
             url = "http://" + url
         if not url.endswith("/"):
             url += "/"
-        if "tat_nuevo" not in url:
+        # Solo añadir /tat_nuevo/ si el host es una IP (sin letras en el hostname)
+        from urllib.parse import urlparse
+        host = urlparse(url).hostname or ""
+        _IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+        if _IP_RE.match(host) and "tat_nuevo" not in url:
             url += "tat_nuevo/"
         return url
 
@@ -389,6 +405,12 @@ class PortalXeon(BasePortal):
         """Extrae el prefijo numérico del usuario como Cód. de Seguridad (ej: '225BUC' → '225')."""
         match = re.match(r"^(\d+)", self.proveedor.usuario)
         return match.group(1) if match else ""
+
+    def _extract_username(self) -> str:
+        """Extrae la parte alfabética del usuario como nombre de zona (ej: '225BUC' → 'BUC').
+        Si el usuario no tiene prefijo numérico, devuelve el valor completo."""
+        match = re.match(r"^\d+([A-Za-z].*)$", self.proveedor.usuario)
+        return match.group(1) if match else self.proveedor.usuario
 
     def _resolve_week_year(self) -> tuple[int, int]:
         from datetime import date

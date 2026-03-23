@@ -56,17 +56,52 @@ class PortalA(BasePortal):
 
         A partial success (only one file downloaded) is still returned with
         success=True so the orchestrator can postprocess whatever was obtained.
+        On automatic retry, files already downloaded in the previous attempt are
+        reused from disk so the portal does not re-download them unnecessarily.
         """
         self.download_dir.mkdir(parents=True, exist_ok=True)
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
-
         error_screenshot_path = self._build_screenshot_path("error")
+
+        # ── Reutilizar archivos recientes (evita repetir en reintento automático) ──
+        ventas_cached = self._find_recent_download("ventas")
+        inventario_cached = self._find_recent_download("inventario")
+
+        if ventas_cached:
+            self.logger.info(
+                "[%s] Ventas ya descargadas en intento anterior, reutilizando: %s",
+                self.proveedor.display_name, ventas_cached.name,
+            )
+        if inventario_cached:
+            self.logger.info(
+                "[%s] Inventario ya descargado en intento anterior, reutilizando: %s",
+                self.proveedor.display_name, inventario_cached.name,
+            )
+
+        # Si ambos ya están disponibles no hace falta abrir el browser
+        if ventas_cached and inventario_cached:
+            names = f"{ventas_cached.name} | {inventario_cached.name}"
+            self.logger.info("[%s] Ambos archivos en caché, sin necesidad de acceder al portal.", self.proveedor.display_name)
+            return ExecutionResult(
+                proveedor=self.proveedor.display_name,
+                portal_tipo=self.proveedor.portal_tipo,
+                success=True,
+                needs_retry=False,
+                message=f"Descargados: {names}",
+                downloaded_file=ventas_cached,
+                downloaded_files=[ventas_cached, inventario_cached],
+            )
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=self._headless_mode(), channel=settings.BROWSER_CHANNEL)
             context = browser.new_context(accept_downloads=True)
             page = context.new_page()
+            # Partir de los archivos ya obtenidos en el intento previo (si los hay)
             downloaded_files: list[Path] = []
+            if ventas_cached:
+                downloaded_files.append(ventas_cached)
+            if inventario_cached:
+                downloaded_files.append(inventario_cached)
             partial_errors: list[str] = []
             login_ok = False
 
@@ -77,40 +112,42 @@ class PortalA(BasePortal):
                 self._login(page)
                 login_ok = True
 
-                # ── Exportación de ventas ─────────────────────────────────
-                try:
-                    sales_file = self._run_sales_export(page)
-                    downloaded_files.append(sales_file)
-                    self.logger.info(
-                        "[%s] Ventas descargadas: %s",
-                        self.proveedor.display_name,
-                        sales_file.name,
-                    )
-                except (PlaywrightTimeoutError, PlaywrightError, Exception) as exc:
-                    partial_errors.append(f"Ventas: {exc}")
-                    self.logger.error(
-                        "[%s] Error al exportar ventas: %s",
-                        self.proveedor.display_name,
-                        exc,
-                    )
-                    self._recover_to_home(page)
+                # ── Exportación de ventas (solo si no estaba en caché) ────
+                if not ventas_cached:
+                    try:
+                        sales_file = self._run_sales_export(page)
+                        downloaded_files.append(sales_file)
+                        self.logger.info(
+                            "[%s] Ventas descargadas: %s",
+                            self.proveedor.display_name,
+                            sales_file.name,
+                        )
+                    except (PlaywrightTimeoutError, PlaywrightError, Exception) as exc:
+                        partial_errors.append(f"Ventas: {exc}")
+                        self.logger.error(
+                            "[%s] Error al exportar ventas: %s",
+                            self.proveedor.display_name,
+                            exc,
+                        )
+                        self._recover_to_home(page)
 
-                # ── Exportación de inventario ─────────────────────────────
-                try:
-                    inventory_file = self._run_inventory_export(page)
-                    downloaded_files.append(inventory_file)
-                    self.logger.info(
-                        "[%s] Inventario descargado: %s",
-                        self.proveedor.display_name,
-                        inventory_file.name,
-                    )
-                except (PlaywrightTimeoutError, PlaywrightError, Exception) as exc:
-                    partial_errors.append(f"Inventario: {exc}")
-                    self.logger.error(
-                        "[%s] Error al exportar inventario: %s",
-                        self.proveedor.display_name,
-                        exc,
-                    )
+                # ── Exportación de inventario (solo si no estaba en caché) ─
+                if not inventario_cached:
+                    try:
+                        inventory_file = self._run_inventory_export(page)
+                        downloaded_files.append(inventory_file)
+                        self.logger.info(
+                            "[%s] Inventario descargado: %s",
+                            self.proveedor.display_name,
+                            inventory_file.name,
+                        )
+                    except (PlaywrightTimeoutError, PlaywrightError, Exception) as exc:
+                        partial_errors.append(f"Inventario: {exc}")
+                        self.logger.error(
+                            "[%s] Error al exportar inventario: %s",
+                            self.proveedor.display_name,
+                            exc,
+                        )
 
             except (PlaywrightTimeoutError, PlaywrightError, Exception) as exc:
                 if not login_ok:
@@ -168,6 +205,26 @@ class PortalA(BasePortal):
                 downloaded_file=downloaded_files[0],
                 downloaded_files=downloaded_files,
             )
+
+    def _find_recent_download(self, tipo: str, max_age_minutes: int = 240) -> Path | None:
+        """Devuelve un archivo descargado recientemente del tipo indicado ('ventas'/'inventario').
+
+        Sirve para que el reintento automático reutilice lo que ya descargó
+        el intento anterior y no vuelva a ejecutar la misma descarga.
+        El umbral de 4 horas cubre ejecuciones largas con muchos proveedores.
+        """
+        cutoff = time.time() - max_age_minutes * 60
+        try:
+            candidates = [
+                f for f in self.download_dir.iterdir()
+                if f.is_file()
+                and tipo in f.name.lower()
+                and f.stat().st_mtime > cutoff
+            ]
+        except OSError:
+            return None
+        # Si hay varios, devolver el más reciente
+        return max(candidates, key=lambda f: f.stat().st_mtime) if candidates else None
 
     def _run_sales_export(self, page: Page) -> Path:
         self._open_ventas_netas_bi(page)
