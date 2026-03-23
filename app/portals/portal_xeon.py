@@ -150,8 +150,8 @@ class PortalXeon(BasePortal):
             "[%s] Descargando ventas (Paretto): %s → %s",
             self.proveedor.display_name, fecha_desde, fecha_hasta,
         )
-        self._navigate_reportes_submenu(page, "Paretto")
-        page.wait_for_url("**/home.php?view=paretto**", timeout=15000)
+        self._navigate_to_view(page, view_key="paretto", link_text="Paretto")
+        page.wait_for_load_state("domcontentloaded", timeout=15000)
 
         # Seleccionar mes en el dropdown
         self._select_mes(page, fecha_desde)
@@ -235,7 +235,7 @@ class PortalXeon(BasePortal):
     def _download_inventario(self, page: Page) -> Path:
         """Navega a Inventario Neto / Lista de Precios y descarga el Excel."""
         self.logger.info("[%s] Descargando inventario.", self.proveedor.display_name)
-        self._navigate_reportes_submenu(page, "Inventario")
+        self._navigate_to_view(page, view_key="inventario", link_text="Inventario")
         page.wait_for_load_state("domcontentloaded", timeout=15000)
 
         # Si hay un botón BUSCAR, hacer click para cargar los resultados
@@ -251,14 +251,32 @@ class PortalXeon(BasePortal):
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
-    def _navigate_reportes_submenu(self, page: Page, submenu_text: str) -> None:
-        """Hover sobre 'Reportes' en la barra de navegación y clic en el ítem del submenú."""
+    def _navigate_to_view(self, page: Page, view_key: str, link_text: str) -> None:
+        """Navega a una sección del portal.
+
+        Estrategia 1 (directa): clic en el link con href que contiene view_key.
+        Estrategia 2 (submenú): hover sobre 'Reportes' y clic en el ítem del submenú.
+        """
+        # Estrategia 1: link directo en la home page (ej: href="home.php?view=paretto")
+        direct = page.locator(f"a[href*='view={view_key}']")
+        if direct.count():
+            self.logger.info(
+                "[%s] Navegando a '%s' via link directo (view=%s).",
+                self.proveedor.display_name, link_text, view_key,
+            )
+            direct.first.click()
+            return
+
+        # Estrategia 2: hover sobre el menú Reportes y clic en submenú
+        self.logger.info(
+            "[%s] Link directo no encontrado, usando submenu Reportes → %s.",
+            self.proveedor.display_name, link_text,
+        )
         reportes = page.get_by_role("link", name=re.compile(r"^Reportes$", re.IGNORECASE))
         reportes.hover()
         page.wait_for_timeout(500)
-        # El submenú debería aparecer; clic en el ítem que contiene submenu_text
         page.locator(
-            f"a:has-text('{submenu_text}'), li:has-text('{submenu_text}') > a"
+            f"a:has-text('{link_text}'), li:has-text('{link_text}') > a"
         ).first.click()
 
     # ── Export ────────────────────────────────────────────────────────────────
