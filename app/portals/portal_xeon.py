@@ -145,37 +145,29 @@ class PortalXeon(BasePortal):
     # ── Ventas (Paretto) ──────────────────────────────────────────────────────
 
     def _download_ventas(self, page: Page, fecha_desde: str, fecha_hasta: str) -> Path:
-        """Navega a Paretto de Ventas, aplica filtros y descarga el Excel."""
+        """Navega a Paretto de Ventas, aplica filtros y descarga via Reportes > Exportar Paretto."""
         self.logger.info(
             "[%s] Descargando ventas (Paretto): %s → %s",
             self.proveedor.display_name, fecha_desde, fecha_hasta,
         )
         self._navigate_to_view(page, view_key="paretto", link_text="Paretto")
-        page.wait_for_load_state("domcontentloaded", timeout=15000)
 
-        # Seleccionar mes en el dropdown
+        # 1. Seleccionar mes en el dropdown (ej: "M33 == 2026-03-01 - 2026-03-31")
         self._select_mes(page, fecha_desde)
 
-        # Rellenar fechas en formato dd/mm/yyyy
+        # 2. Rellenar fechas en formato dd/mm/aaaa
         fecha_ini = self._to_portal_date(fecha_desde)
         fecha_fin = self._to_portal_date(fecha_hasta)
+        inputs = page.locator("input[placeholder*='dd/mm' i]")
+        inputs.first.fill(fecha_ini)
+        inputs.last.fill(fecha_fin)
 
-        date_inputs = page.locator(
-            "input[name*='fecha_ini' i], input[placeholder*='dd/mm' i], "
-            "input[name*='inicio' i], input[name*='desde' i]"
-        )
-        date_inputs.first.fill(fecha_ini)
-
-        date_inputs_fin = page.locator(
-            "input[name*='fecha_fin' i], input[name*='fin' i], "
-            "input[name*='hasta' i], input[name*='final' i]"
-        )
-        date_inputs_fin.last.fill(fecha_fin)
-
+        # 3. Buscar
         page.get_by_text("Buscar", exact=False).first.click()
         page.wait_for_load_state("networkidle", timeout=60000)
 
-        return self._click_export_excel(page, "ventas")
+        # 4. Exportar: Reportes → "Exportar Paretto"
+        return self._export_via_reportes(page, "Exportar Paretto", "ventas")
 
     def _select_mes(self, page: Page, fecha_desde: str) -> None:
         """Selecciona en el dropdown 'Mes' el período que contiene fecha_desde."""
@@ -233,21 +225,21 @@ class PortalXeon(BasePortal):
     # ── Inventario ────────────────────────────────────────────────────────────
 
     def _download_inventario(self, page: Page) -> Path:
-        """Navega a Inventario Neto / Lista de Precios y descarga el Excel."""
-        self.logger.info("[%s] Descargando inventario.", self.proveedor.display_name)
-        self._navigate_to_view(page, view_key="inventario", link_text="Inventario")
-        page.wait_for_load_state("domcontentloaded", timeout=15000)
+        """Navega a Lista de Precios (view=listaprecios) y descarga el inventario."""
+        self.logger.info("[%s] Descargando inventario (Lista de Precios).", self.proveedor.display_name)
+        self._navigate_to_view(page, view_key="listaprecios", link_text="Inventario")
 
-        # Si hay un botón BUSCAR, hacer click para cargar los resultados
+        # Hacer click en BUSCAR para cargar todos los productos
         buscar = page.locator(
-            "button:has-text('BUSCAR'), button:has-text('Buscar'), "
-            "input[type='submit'][value*='BUSCAR' i], input[type='button'][value*='BUSCAR' i]"
+            "input[type='submit'][value*='BUSCAR' i], input[type='button'][value*='BUSCAR' i], "
+            "button:has-text('BUSCAR'), button:has-text('Buscar')"
         )
-        if buscar.count():
-            buscar.first.click()
-            page.wait_for_load_state("networkidle", timeout=60000)
+        buscar.first.wait_for(state="visible", timeout=15000)
+        buscar.first.click()
+        page.wait_for_load_state("networkidle", timeout=60000)
 
-        return self._click_export_excel(page, "inventario")
+        # Exportar: buscar icono/link de descarga o Reportes > exportar
+        return self._export_via_reportes(page, "Exportar", "inventario")
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
@@ -262,21 +254,19 @@ class PortalXeon(BasePortal):
 
     # ── Export ────────────────────────────────────────────────────────────────
 
-    def _click_export_excel(self, page: Page, tipo: str) -> Path:
-        """Localiza y hace clic en el botón de exportar a Excel; retorna la ruta guardada."""
-        self.logger.info("[%s] Exportando %s a Excel.", self.proveedor.display_name, tipo)
-
-        export_loc = page.locator(
-            "a:has-text('Excel'), button:has-text('Excel'), "
-            "a:has-text('export'), button:has-text('export'), "
-            "a:has-text('Export'), a:has-text('EXCEL'), "
-            "input[value*='Excel' i], input[value*='Export' i], "
-            "a[href*='excel'], a[href*='export']"
-        ).first
-        export_loc.wait_for(state="visible", timeout=15000)
+    def _export_via_reportes(self, page: Page, menu_item: str, tipo: str) -> Path:
+        """Abre el menú Reportes, hace clic en menu_item y captura la descarga."""
+        self.logger.info(
+            "[%s] Exportando %s via Reportes → %s",
+            self.proveedor.display_name, tipo, menu_item,
+        )
+        reportes = page.get_by_role("link", name=re.compile(r"^Reportes$", re.IGNORECASE))
+        reportes.wait_for(state="visible", timeout=15000)
+        reportes.hover()
+        page.wait_for_timeout(600)
 
         with page.expect_download(timeout=120000) as dl_info:
-            export_loc.click()
+            page.get_by_text(menu_item, exact=False).first.click()
 
         download = dl_info.value
         dest = self.download_dir / (download.suggested_filename or f"xeon_{tipo}.xlsx")
