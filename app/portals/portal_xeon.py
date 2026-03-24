@@ -145,28 +145,28 @@ class PortalXeon(BasePortal):
     # ── Ventas (Paretto) ──────────────────────────────────────────────────────
 
     def _download_ventas(self, page: Page, fecha_desde: str, fecha_hasta: str) -> Path:
-        """Navega a Paretto de Ventas, aplica filtros y descarga via Reportes > Exportar Paretto."""
+        """Navega a Paretto de Ventas, aplica filtros y descarga via Reportes > Exportar Paretto.
+
+        Las fechas son campos readonly que se auto-rellenan al seleccionar el mes
+        del dropdown — no se intentan rellenar manualmente.
+        """
         self.logger.info(
             "[%s] Descargando ventas (Paretto): %s → %s",
             self.proveedor.display_name, fecha_desde, fecha_hasta,
         )
         self._navigate_to_view(page, view_key="paretto", link_text="Paretto")
 
-        # 1. Seleccionar mes en el dropdown (ej: "M33 == 2026-03-01 - 2026-03-31")
+        # 1. Seleccionar mes → las fechas readonly se auto-rellenan
         self._select_mes(page, fecha_desde)
+        page.wait_for_timeout(500)
 
-        # 2. Rellenar fechas en formato dd/mm/aaaa
-        fecha_ini = self._to_portal_date(fecha_desde)
-        fecha_fin = self._to_portal_date(fecha_hasta)
-        inputs = page.locator("input[placeholder*='dd/mm' i]")
-        inputs.first.fill(fecha_ini)
-        inputs.last.fill(fecha_fin)
-
-        # 3. Buscar
-        page.get_by_text("Buscar", exact=False).first.click()
+        # 2. Click en Buscar (id=BtoBuscar o texto "Buscar")
+        buscar = page.locator("#BtoBuscar, button[name='BtoBuscar'], button[type='submit']")
+        buscar.first.wait_for(state="visible", timeout=10000)
+        buscar.first.click()
         page.wait_for_load_state("networkidle", timeout=60000)
 
-        # 4. Exportar: Reportes → "Exportar Paretto"
+        # 3. Exportar: Reportes → "Exportar Paretto"
         return self._export_via_reportes(page, "Exportar Paretto", "ventas")
 
     def _select_mes(self, page: Page, fecha_desde: str) -> None:
