@@ -105,19 +105,30 @@ class PortalXeon(BasePortal):
     def _login(self, session: requests.Session) -> None:
         url = self._base_url()
         self.logger.info("[%s] Login en %s", self.proveedor.display_name, url)
-        resp = session.post(
-            url,
-            data={
-                "username": self.proveedor.usuario,
-                "password": self.proveedor.password,
-            },
-            allow_redirects=True,
-            timeout=30,
-        )
+
+        # GET primero para obtener cookies de sesión y campos ocultos del form
+        resp = session.get(url, timeout=30)
         resp.raise_for_status()
-        # Verificar que ya no estamos en la pantalla de login
-        if "cerrar" not in resp.text.lower() and "logout" not in resp.text.lower():
-            raise RuntimeError("Login fallido: credenciales incorrectas o portal no responde.")
+
+        # Extraer campos hidden del formulario de login (si los hay)
+        hidden = dict(re.findall(
+            r'<input[^>]+type=["\']hidden["\'][^>]+name=["\']([^"\']+)["\'][^>]+value=["\']([^"\']*)["\']',
+            resp.text, re.IGNORECASE,
+        ))
+
+        post_data = {
+            **hidden,
+            "username": self.proveedor.usuario,
+            "password": self.proveedor.password,
+        }
+
+        resp = session.post(url, data=post_data, allow_redirects=True, timeout=30)
+        resp.raise_for_status()
+
+        # Detectar login fallido: si el campo "username" sigue presente, no entramos
+        if re.search(r'<input[^>]+name=["\']username["\']', resp.text, re.IGNORECASE):
+            raise RuntimeError("Login fallido: credenciales incorrectas o el portal no aceptó la sesión.")
+
         self.logger.info("[%s] Login OK.", self.proveedor.display_name)
 
     # ── Resolución de URL de backend ──────────────────────────────────────────
