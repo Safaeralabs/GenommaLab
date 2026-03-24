@@ -156,11 +156,22 @@ class PortalXeon(BasePortal):
         )
         self._navigate_to_view(page, view_key="paretto", link_text="Paretto")
 
-        # 1. Seleccionar mes → las fechas readonly se auto-rellenan
+        # 1. Seleccionar mes del dropdown
         self._select_mes(page, fecha_desde)
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(600)
 
-        # 2. Click en Buscar (id=BtoBuscar o texto "Buscar")
+        # 2. Las fechas son readonly y pueden no rellenarse automáticamente.
+        #    Se inyectan via JS para asegurar que lleguen al servidor.
+        page.evaluate(f"""() => {{
+            var ini = document.getElementById('TxtFecIni')
+                   || document.querySelector('input[name="TxtFecIni"]');
+            var fin = document.getElementById('TxtFecFin')
+                   || document.querySelector('input[name="TxtFecFin"]');
+            if (ini) ini.value = '{fecha_desde}';
+            if (fin) fin.value = '{fecha_hasta}';
+        }}""")
+
+        # 3. Click en Buscar
         buscar = page.locator("#BtoBuscar, button[name='BtoBuscar'], button[type='submit']")
         buscar.first.wait_for(state="visible", timeout=10000)
         buscar.first.click()
