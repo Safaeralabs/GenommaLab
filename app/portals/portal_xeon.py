@@ -1,27 +1,26 @@
-"""Playwright implementation for Xeon TAT portal (Pastor Julio Delgado, canal tradicional)."""
+"""Xeon TAT/Mensuli portal — requests-based (no browser needed)."""
 
 from __future__ import annotations
 
 import logging
-import os
 import re
 import shutil
 import socket
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
 
-from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import Page
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-from playwright.sync_api import sync_playwright
+import requests
 
 from app.config import settings
 from app.core.models import ExecutionResult, Proveedor
 from app.portals.base_portal import BasePortal
 
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
 
 class PortalXeon(BasePortal):
-    """Xeon TAT workflow: login, Paretto de Ventas, Inventario Neto."""
+    """Xeon workflow: login → Paretto de Ventas → Lista de Precios."""
 
     def __init__(
         self,
@@ -33,23 +32,15 @@ class PortalXeon(BasePortal):
         super().__init__(proveedor, download_dir, screenshot_dir)
         self.logger = logger
 
+    # ── Punto de entrada ──────────────────────────────────────────────────────
+
     def ejecutar(self) -> ExecutionResult:
         self.download_dir.mkdir(parents=True, exist_ok=True)
-        self.screenshot_dir.mkdir(parents=True, exist_ok=True)
-        error_screenshot_path = self._build_screenshot_path("error")
 
-        start_date = self.proveedor.fecha_desde
-        end_date = self.proveedor.fecha_hasta
-        week, year = self._resolve_week_year()
-        zona = self._extract_zona()
-
-        # Verificar conectividad VPN antes de lanzar el navegador
+        # Verificar VPN antes de cualquier llamada
         host, port = self._parse_host_port()
         if not self._is_reachable(host, port):
-            msg = (
-                f"VPN no activa o portal inaccesible ({host}:{port}). "
-                "Activa la VPN e intenta de nuevo."
-            )
+            msg = f"VPN no activa o portal inaccesible ({host}:{port})."
             self.logger.warning("[%s] %s", self.proveedor.display_name, msg)
             return ExecutionResult(
                 proveedor=self.proveedor.display_name,
@@ -58,40 +49,31 @@ class PortalXeon(BasePortal):
                 message=msg,
             )
 
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=self._headless_mode(), channel=settings.BROWSER_CHANNEL)
-            context = browser.new_context(accept_downloads=True)
-            page = context.new_page()
+        week, year = self._resolve_week_year()
+        zona = self._extract_zona()
 
-            try:
-                self._login(page)
-                self.logger.info("[%s] Login completado.", self.proveedor.display_name)
+        session = requests.Session()
+        session.headers.update({"User-Agent": _UA})
 
-                ventas_path = self._download_ventas(page, start_date, end_date)
-                inventario_path = self._download_inventario(page)
+        try:
+            self._login(session)
 
-            except (PlaywrightTimeoutError, PlaywrightError, Exception) as exc:
-                self._take_screenshot(page, error_screenshot_path)
-                self.logger.exception(
-                    "[%s] Error durante descarga Xeon: %s",
-                    self.proveedor.display_name, exc,
-                )
-                return ExecutionResult(
-                    proveedor=self.proveedor.display_name,
-                    portal_tipo=self.proveedor.portal_tipo,
-                    success=False,
-                    message=f"Error Xeon: {exc}",
-                    screenshot_path=error_screenshot_path if error_screenshot_path.exists() else None,
-                )
-            finally:
-                try:
-                    context.close()
-                except Exception:
-                    pass
-                try:
-                    browser.close()
-                except Exception:
-                    pass
+            backend_url, qs = self._resolve_backend_url(session, "paretto")
+            ventas_path = self._download_ventas(session, backend_url, qs)
+
+            backend_inv_url, qs_inv = self._resolve_backend_url(session, "listaprecios")
+            inventario_path = self._download_inventario(session, backend_inv_url, qs_inv)
+
+        except Exception as exc:
+            self.logger.exception(
+                "[%s] Error durante descarga Xeon: %s", self.proveedor.display_name, exc
+            )
+            return ExecutionResult(
+                proveedor=self.proveedor.display_name,
+                portal_tipo=self.proveedor.portal_tipo,
+                success=False,
+                message=f"Error Xeon: {exc}",
+            )
 
         today = datetime.now().strftime("%d%m%Y")
         ventas_final = self._rename_file(
@@ -105,7 +87,7 @@ class PortalXeon(BasePortal):
         self._sync_to_hb(inventario_final, week, year)
 
         self.logger.info(
-            "[%s] Descarga completada: %s | %s",
+            "[%s] Completado: %s | %s",
             self.proveedor.display_name, ventas_final.name, inventario_final.name,
         )
         return ExecutionResult(
@@ -120,172 +102,186 @@ class PortalXeon(BasePortal):
 
     # ── Login ─────────────────────────────────────────────────────────────────
 
-    def _login(self, page: Page) -> None:
-        login_url = self._base_url()
-        self.logger.info("[%s] Abriendo %s", self.proveedor.display_name, login_url)
-        page.goto(login_url, wait_until="domcontentloaded", timeout=60000)
-
-        self.logger.info(
-            "[%s] Login → usuario='%s'",
-            self.proveedor.display_name, self.proveedor.usuario,
+    def _login(self, session: requests.Session) -> None:
+        url = self._base_url()
+        self.logger.info("[%s] Login en %s", self.proveedor.display_name, url)
+        resp = session.post(
+            url,
+            data={
+                "username": self.proveedor.usuario,
+                "password": self.proveedor.password,
+            },
+            allow_redirects=True,
+            timeout=30,
         )
+        resp.raise_for_status()
+        # Verificar que ya no estamos en la pantalla de login
+        if "cerrar" not in resp.text.lower() and "logout" not in resp.text.lower():
+            raise RuntimeError("Login fallido: credenciales incorrectas o portal no responde.")
+        self.logger.info("[%s] Login OK.", self.proveedor.display_name)
 
-        # Usuario (valor completo tal como está en providers.json, ej: "225BUC")
-        page.locator(
-            "input[name='usuario'], input[name='username'], input[name='user'], "
-            "input[placeholder*='suario' i], input[placeholder*='sername' i]"
-        ).first.fill(self.proveedor.usuario)
+    # ── Resolución de URL de backend ──────────────────────────────────────────
 
-        # Contraseña
-        page.locator("input[type='password']").first.fill(self.proveedor.password)
+    def _resolve_backend_url(
+        self, session: requests.Session, view: str
+    ) -> tuple[str, dict[str, str]]:
+        """GET frontend home.php?view=<view> y extrae el iframe src con los parámetros de usuario."""
+        frontend = self._base_url() + f"home.php?view={view}"
+        resp = session.get(frontend, timeout=30)
+        resp.raise_for_status()
 
-        page.get_by_text("Ingresar", exact=False).click()
-        page.wait_for_url("**/home.php**", timeout=30000)
+        match = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', resp.text, re.IGNORECASE)
+        if not match:
+            raise RuntimeError(
+                f"No se encontro iframe en home.php?view={view}. "
+                "El portal puede haber cambiado su estructura."
+            )
+
+        iframe_src = match.group(1)
+        full_url = urljoin(frontend, iframe_src)
+        parsed = urlparse(full_url)
+        base = urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+        qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+
+        self.logger.debug(
+            "[%s] Backend URL para '%s': %s (params: %s)",
+            self.proveedor.display_name, view, base, qs,
+        )
+        return base, qs
 
     # ── Ventas (Paretto) ──────────────────────────────────────────────────────
 
-    def _download_ventas(self, page: Page, fecha_desde: str, fecha_hasta: str) -> Path:
-        """Navega a Paretto de Ventas, aplica filtros y descarga via Reportes > Exportar Paretto.
-
-        Las fechas son campos readonly que se auto-rellenan al seleccionar el mes
-        del dropdown — no se intentan rellenar manualmente.
-        """
+    def _download_ventas(
+        self,
+        session: requests.Session,
+        backend_url: str,
+        qs: dict[str, str],
+    ) -> Path:
         self.logger.info(
-            "[%s] Descargando ventas (Paretto): %s → %s",
-            self.proveedor.display_name, fecha_desde, fecha_hasta,
+            "[%s] Descargando ventas (Paretto) %s → %s",
+            self.proveedor.display_name,
+            self.proveedor.fecha_desde,
+            self.proveedor.fecha_hasta,
         )
-        self._navigate_to_view(page, view_key="paretto", link_text="Paretto")
 
-        # 1. Seleccionar mes del dropdown
-        self._select_mes(page, fecha_desde)
-        page.wait_for_timeout(600)
+        # 1. GET página para obtener opciones de mes
+        resp = session.get(backend_url, params=qs, timeout=30)
+        resp.raise_for_status()
+        mes_value = self._find_mes_value(resp.text)
+        self.logger.info("[%s] Mes seleccionado: %s", self.proveedor.display_name, mes_value)
 
-        # 2. Las fechas son readonly y pueden no rellenarse automáticamente.
-        #    Se inyectan via JS para asegurar que lleguen al servidor.
-        page.evaluate(f"""() => {{
-            var ini = document.getElementById('TxtFecIni')
-                   || document.querySelector('input[name="TxtFecIni"]');
-            var fin = document.getElementById('TxtFecFin')
-                   || document.querySelector('input[name="TxtFecFin"]');
-            if (ini) ini.value = '{fecha_desde}';
-            if (fin) fin.value = '{fecha_hasta}';
-        }}""")
+        # 2. POST formulario con fechas y mes
+        form = {
+            "LstMes":      mes_value,
+            "TxtFecIni":   self.proveedor.fecha_desde,   # YYYY-MM-DD
+            "TxtFecFin":   self.proveedor.fecha_hasta,
+            "TxtSistema":  qs.get("S", "B"),
+            "TxtSucursal": qs.get("Sucursal", self._extract_zona()),
+            "TxtLstMes":   "",
+            "TxtZona":     qs.get("Zona", "0"),
+            "TxtLinea":    qs.get("Linea", "224,225"),
+            "Mobile":      "0",
+            "BtoBuscar":   "",
+        }
+        resp = session.post(backend_url, params=qs, data=form, timeout=60)
+        resp.raise_for_status()
 
-        # 3. Click en Buscar
-        buscar = page.locator("#BtoBuscar, button[name='BtoBuscar'], button[type='submit']")
-        buscar.first.wait_for(state="visible", timeout=10000)
-        buscar.first.click()
-        page.wait_for_load_state("networkidle", timeout=60000)
+        # 3. Encontrar link de exportar Excel en la respuesta
+        export_url = self._find_export_href(resp.text, backend_url, "ParettoExportar")
+        self.logger.info("[%s] Export URL ventas: %s", self.proveedor.display_name, export_url)
 
-        # 3. Exportar: Reportes → "Exportar Paretto"
-        return self._export_via_reportes(page, "Exportar Paretto", "ventas")
+        return self._download_file(session, export_url, "ventas")
 
-    def _select_mes(self, page: Page, fecha_desde: str) -> None:
-        """Selecciona en el dropdown 'Mes' el período que contiene fecha_desde."""
-        try:
-            from datetime import date as _date
-            d = _date.fromisoformat(fecha_desde)
-            year_str = str(d.year)
-            month_str = f"{d.month:02d}"
+    # ── Inventario (Lista de Precios) ─────────────────────────────────────────
 
-            select = page.locator("select").first
-            select.wait_for(state="visible", timeout=5000)
-
-            options = page.evaluate("""() => {
-                const sel = document.querySelector('select');
-                if (!sel) return [];
-                return Array.from(sel.options).map(o => ({value: o.value, text: o.text.trim()}));
-            }""")
-
-            target_val = None
-            for opt in options:
-                text = opt["text"]
-                if year_str in text and month_str in text:
-                    target_val = opt["value"]
-                    break
-
-            if target_val is None:
-                # Fallback: buscar por nombre de mes en español
-                _MONTHS_ES = {
-                    1: "ene", 2: "feb", 3: "mar", 4: "abr",
-                    5: "may", 6: "jun", 7: "jul", 8: "ago",
-                    9: "sep", 10: "oct", 11: "nov", 12: "dic",
-                }
-                month_es = _MONTHS_ES.get(d.month, "")
-                for opt in options:
-                    text = opt["text"].lower()
-                    if year_str in text and month_es in text:
-                        target_val = opt["value"]
-                        break
-
-            if target_val:
-                select.select_option(value=target_val)
-                self.logger.info(
-                    "[%s] Mes seleccionado: %s", self.proveedor.display_name, target_val
-                )
-            else:
-                self.logger.warning(
-                    "[%s] No se encontró opción de mes para %s-%s; se deja el valor por defecto.",
-                    self.proveedor.display_name, year_str, month_str,
-                )
-        except Exception as exc:
-            self.logger.warning(
-                "[%s] Error seleccionando mes: %s", self.proveedor.display_name, exc
-            )
-
-    # ── Inventario ────────────────────────────────────────────────────────────
-
-    def _download_inventario(self, page: Page) -> Path:
-        """Navega a Lista de Precios (view=listaprecios) y descarga el inventario."""
+    def _download_inventario(
+        self,
+        session: requests.Session,
+        backend_url: str,
+        qs: dict[str, str],
+    ) -> Path:
         self.logger.info("[%s] Descargando inventario (Lista de Precios).", self.proveedor.display_name)
-        self._navigate_to_view(page, view_key="listaprecios", link_text="Inventario")
 
-        # Hacer click en BUSCAR para cargar todos los productos
-        buscar = page.locator(
-            "input[type='submit'][value*='BUSCAR' i], input[type='button'][value*='BUSCAR' i], "
-            "button:has-text('BUSCAR'), button:has-text('Buscar')"
+        # 1. GET página
+        resp = session.get(backend_url, params=qs, timeout=30)
+        resp.raise_for_status()
+
+        # 2. POST formulario (buscar todos los productos)
+        form = {
+            "TxtSucursal": qs.get("Sucursal", self._extract_zona()),
+            "TxtSistema":  qs.get("S", "B"),
+            "TxtLinea":    qs.get("Linea", "224,225"),
+            "TxtZona":     qs.get("Zona", "0"),
+            "Mobile":      "0",
+            "BtoBuscar":   "",
+        }
+        resp = session.post(backend_url, params=qs, data=form, timeout=60)
+        resp.raise_for_status()
+
+        # 3. Encontrar link de exportar Excel
+        export_url = self._find_export_href(resp.text, backend_url, "Exportar")
+        self.logger.info("[%s] Export URL inventario: %s", self.proveedor.display_name, export_url)
+
+        return self._download_file(session, export_url, "inventario")
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _find_mes_value(self, html: str) -> str:
+        """Busca en el HTML el value del <option> que corresponde al mes de fecha_desde."""
+        d = date.fromisoformat(self.proveedor.fecha_desde)
+        year_str = str(d.year)
+        month_str = f"{d.month:02d}"
+
+        options = re.findall(
+            r'<option[^>]+value=["\']([^"\']*)["\'][^>]*>([^<]+)<', html, re.IGNORECASE
         )
-        buscar.first.wait_for(state="visible", timeout=15000)
-        buscar.first.click()
-        page.wait_for_load_state("networkidle", timeout=60000)
+        for value, text in options:
+            text = text.strip()
+            if year_str in text and month_str in text:
+                return value
 
-        # Exportar: buscar icono/link de descarga o Reportes > exportar
-        return self._export_via_reportes(page, "Exportar", "inventario")
-
-    # ── Navigation ────────────────────────────────────────────────────────────
-
-    def _navigate_to_view(self, page: Page, view_key: str, link_text: str) -> None:
-        """Navega directamente a la URL de la vista (home.php?view=<view_key>)."""
-        base = self._base_url()  # termina en '/'
-        url = f"{base}home.php?view={view_key}"
-        self.logger.info(
-            "[%s] Navegando a %s", self.proveedor.display_name, url,
+        raise RuntimeError(
+            f"Mes {year_str}-{month_str} no encontrado en el dropdown del portal."
         )
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
-    # ── Export ────────────────────────────────────────────────────────────────
-
-    def _export_via_reportes(self, page: Page, menu_item: str, tipo: str) -> Path:
-        """Abre el menú Reportes, hace clic en menu_item y captura la descarga."""
-        self.logger.info(
-            "[%s] Exportando %s via Reportes → %s",
-            self.proveedor.display_name, tipo, menu_item,
+    def _find_export_href(self, html: str, backend_url: str, keyword: str) -> str:
+        """Localiza el href del link de exportar Excel en el HTML de resultados."""
+        hrefs = re.findall(r'href=["\']([^"\']+)["\']', html, re.IGNORECASE)
+        # Primero buscar por keyword exacto
+        for href in hrefs:
+            if keyword.lower() in href.lower():
+                return urljoin(backend_url, href)
+        # Fallback: cualquier link que mencione exportar/excel
+        for href in hrefs:
+            if any(w in href.lower() for w in ("exportar", "excel", "export")):
+                return urljoin(backend_url, href)
+        raise RuntimeError(
+            f"No se encontro link de exportacion (keyword='{keyword}') en la respuesta del portal."
         )
-        reportes = page.get_by_role("link", name=re.compile(r"^Reportes$", re.IGNORECASE))
-        reportes.wait_for(state="visible", timeout=15000)
-        reportes.hover()
-        page.wait_for_timeout(600)
 
-        with page.expect_download(timeout=120000) as dl_info:
-            page.get_by_text(menu_item, exact=False).first.click()
+    def _download_file(
+        self, session: requests.Session, url: str, tipo: str
+    ) -> Path:
+        """Descarga el archivo desde url y lo guarda en download_dir."""
+        resp = session.get(url, stream=True, timeout=120)
+        resp.raise_for_status()
 
-        download = dl_info.value
-        dest = self.download_dir / (download.suggested_filename or f"xeon_{tipo}.xlsx")
-        download.save_as(dest)
-        self.logger.info("[%s] Archivo guardado: %s", self.proveedor.display_name, dest)
+        # Intentar nombre desde Content-Disposition
+        cd = resp.headers.get("Content-Disposition", "")
+        name_match = re.search(r'filename[^;=\n]*=(["\']?)([^"\';\n]+)\1', cd)
+        if name_match:
+            filename = name_match.group(2).strip()
+        else:
+            ext = ".xlsx"
+            filename = f"xeon_{tipo}_{self._extract_zona()}{ext}"
+
+        dest = self.download_dir / filename
+        with open(dest, "wb") as fh:
+            for chunk in resp.iter_content(chunk_size=8192):
+                fh.write(chunk)
+
+        self.logger.info("[%s] Guardado: %s", self.proveedor.display_name, dest)
         return dest
-
-    # ── OneDrive HB ───────────────────────────────────────────────────────────
 
     def _rename_file(self, src: Path, new_name: str) -> Path:
         dest = src.parent / new_name
@@ -293,46 +289,53 @@ class PortalXeon(BasePortal):
         return dest
 
     def _sync_to_hb(self, file_path: Path, week: int, year: int) -> None:
-        """Copia el archivo a OneDrive/HB/{cliente}/S{week:02d}_{year}/"""
         hb_dir = settings.ONEDRIVE_HB_DIR
         if hb_dir is None:
-            self.logger.debug(
-                "[%s] ONEDRIVE_HB_DIR no configurado, sync omitido.",
-                self.proveedor.display_name,
-            )
+            self.logger.debug("[%s] ONEDRIVE_HB_DIR no configurado.", self.proveedor.display_name)
             return
-
         target_dir = hb_dir / self.proveedor.proveedor / f"S{week:02d}_{year}"
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
+            dest = target_dir / file_path.name
+            if not dest.exists():
+                shutil.copy2(file_path, dest)
+                self.logger.info(
+                    "[%s] Copiado a HB: %s", self.proveedor.display_name, dest
+                )
         except OSError as exc:
-            self.logger.warning(
-                "[%s] No se pudo crear carpeta OneDrive HB: %s",
-                self.proveedor.display_name, exc,
-            )
-            return
+            self.logger.warning("[%s] Error sync HB: %s", self.proveedor.display_name, exc)
 
+    # ── Utilidades ────────────────────────────────────────────────────────────
+
+    def _base_url(self) -> str:
+        url = self.proveedor.login_url.strip()
+        if not url.startswith(("http://", "https://")):
+            url = "http://" + url
+        if not url.endswith("/"):
+            url += "/"
+        # Solo añadir /tat_nuevo/ si es IP sin path
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        path = parsed.path.strip("/")
+        if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", host) and not path:
+            url += "tat_nuevo/"
+        return url
+
+    def _extract_zona(self) -> str:
+        match = re.search(r"([A-Z]{2,4})$", self.proveedor.usuario.upper())
+        if match:
+            return match.group(1)
+        return self.proveedor.sede_subportal.replace(" ", "_") or "X"
+
+    def _resolve_week_year(self) -> tuple[int, int]:
         try:
-            shutil.copy2(file_path, target_dir / file_path.name)
-            self.logger.info(
-                "[%s] [OneDrive/HB] %s → HB/%s/S%02d_%s/%s",
-                self.proveedor.display_name,
-                file_path.name,
-                self.proveedor.proveedor,
-                week,
-                year,
-                file_path.name,
-            )
-        except OSError as exc:
-            self.logger.warning(
-                "[%s] Error copiando a OneDrive HB: %s",
-                self.proveedor.display_name, exc,
-            )
-
-    # ── Utilities ─────────────────────────────────────────────────────────────
+            d = date.fromisoformat(self.proveedor.fecha_desde)
+        except (ValueError, TypeError):
+            d = date.today()
+        iso = d.isocalendar()
+        return iso[1], iso[0]
 
     def _parse_host_port(self) -> tuple[str, int]:
-        """Extrae host y puerto de la URL principal del proveedor."""
         url = self.proveedor.login_url.strip()
         url = re.sub(r"^https?://", "", url).split("/")[0]
         if ":" in url:
@@ -345,83 +348,8 @@ class PortalXeon(BasePortal):
 
     @staticmethod
     def _is_reachable(host: str, port: int, timeout: int = 5) -> bool:
-        """Comprueba si el host:port es alcanzable vía TCP (indica VPN activa)."""
         try:
             with socket.create_connection((host, port), timeout=timeout):
                 return True
         except OSError:
             return False
-
-    def _base_url(self) -> str:
-        """Normaliza la URL del portal asegurando protocolo.
-        Solo añade /tat_nuevo/ si el host es una dirección IP (portales TAT con IP directa).
-        Los portales con dominio con nombre (p.ej. base.mensuli.com) ya sirven el login en la raíz.
-        """
-        url = self.proveedor.login_url.strip()
-        if not url.startswith(("http://", "https://")):
-            url = "http://" + url
-        if not url.endswith("/"):
-            url += "/"
-        # Solo añadir /tat_nuevo/ si el host es una IP Y la URL no tiene path propio.
-        # Portales con path explícito (p.ej. /mensuli_base/) no necesitan sufijo.
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        host = parsed.hostname or ""
-        path = parsed.path.strip("/")
-        _IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
-        if _IP_RE.match(host) and not path:
-            url += "tat_nuevo/"
-        return url
-
-    def _extract_zona(self) -> str:
-        """Extrae el sufijo de zona del usuario (ej: '225BUC' → 'BUC')."""
-        match = re.search(r"([A-Z]{2,4})$", self.proveedor.usuario.upper())
-        if match:
-            return match.group(1)
-        # Fallback: usar sede_subportal sin espacios
-        return self.proveedor.sede_subportal.replace(" ", "_") or "X"
-
-    def _extract_security_code(self) -> str:
-        """Extrae el prefijo numérico del usuario como Cód. de Seguridad (ej: '225BUC' → '225')."""
-        match = re.match(r"^(\d+)", self.proveedor.usuario)
-        return match.group(1) if match else ""
-
-    def _extract_username(self) -> str:
-        """Extrae la parte alfabética del usuario como nombre de zona (ej: '225BUC' → 'BUC').
-        Si el usuario no tiene prefijo numérico, devuelve el valor completo."""
-        match = re.match(r"^\d+([A-Za-z].*)$", self.proveedor.usuario)
-        return match.group(1) if match else self.proveedor.usuario
-
-    def _resolve_week_year(self) -> tuple[int, int]:
-        from datetime import date
-        try:
-            d = date.fromisoformat(self.proveedor.fecha_desde)
-        except (ValueError, TypeError):
-            d = date.today()
-        iso = d.isocalendar()
-        return iso[1], iso[0]
-
-    @staticmethod
-    def _to_portal_date(iso_date: str) -> str:
-        """Convierte 'yyyy-mm-dd' a 'dd/mm/yyyy' (formato del portal)."""
-        try:
-            d = datetime.strptime(iso_date, "%Y-%m-%d")
-            return d.strftime("%d/%m/%Y")
-        except (ValueError, TypeError):
-            return iso_date
-
-    @staticmethod
-    def _headless_mode() -> bool:
-        raw_value = os.getenv("RPA_HEADLESS", "0").strip().lower()
-        return raw_value in {"1", "true", "yes", "si"}
-
-    def _build_screenshot_path(self, suffix: str) -> Path:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_name = self.proveedor.display_name.replace(" ", "_").replace("/", "_")
-        return self.screenshot_dir / f"{safe_name}_{suffix}_{ts}.png"
-
-    def _take_screenshot(self, page: Page, path: Path) -> None:
-        try:
-            page.screenshot(path=str(path), full_page=False)
-        except Exception:
-            pass
