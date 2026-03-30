@@ -341,6 +341,8 @@ class PortalA(BasePortal):
 
         inventory_option = self._find_inventory_in_dropdown(page)
         if inventory_option is None:
+            inventory_option = self._find_visible_option(page, "Inventario Proveedor", min_x=250)
+        if inventory_option is None:
             inventory_option = self._find_visible_option(page, "Inventario", min_x=250)
         if inventory_option is None:
             raise RuntimeError("No se encontro la opcion 'Inventario' dentro del mega menu.")
@@ -769,7 +771,10 @@ class PortalA(BasePortal):
             if saldos_box is None:
                 return None
 
-            candidates = page.get_by_text("Inventario", exact=True).all()
+            candidates = (
+                page.get_by_text("Inventario Proveedor", exact=True).all()
+                or page.get_by_text("Inventario", exact=True).all()
+            )
             best: Locator | None = None
             best_dist = float("inf")
             for candidate in candidates:
