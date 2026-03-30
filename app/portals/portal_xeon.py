@@ -128,12 +128,31 @@ class PortalXeon(BasePortal):
         paretto_url = self._base_url() + "home.php?view=paretto"
         self.logger.info("[%s] Navegando a paretto: %s", self.proveedor.display_name, paretto_url)
 
+        # Ir a home primero para que el JS se inicialice correctamente
+        page.goto(self._base_url() + "home.php", wait_until="networkidle", timeout=30000)
+        page.wait_for_timeout(1000)
+
         page.goto(paretto_url, wait_until="networkidle", timeout=30000)
         self.logger.info("[%s] URL paretto: %s", self.proveedor.display_name, page.url)
         page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_loaded.png"))
 
-        # El select LstMes se carga dinamicamente via JS en #BOX; esperar a que aparezca
-        page.wait_for_selector("#LstMes, select[name='LstMes']", timeout=20000)
+        # Diagnostico: loguear HTML de #BOX y estado de #LstMes
+        box_html = page.evaluate(
+            "document.getElementById('BOX')?.innerHTML?.substring(0, 300) || '#BOX no encontrado'"
+        )
+        self.logger.info("[%s] #BOX HTML: %s", self.proveedor.display_name, box_html)
+        lstmes_state = page.evaluate(
+            """() => {
+                const el = document.getElementById('LstMes') || document.querySelector('select[name="LstMes"]');
+                if (!el) return 'NO EXISTE en DOM';
+                const style = window.getComputedStyle(el);
+                return 'existe | display:' + style.display + ' visibility:' + style.visibility + ' options:' + el.options.length;
+            }"""
+        )
+        self.logger.info("[%s] #LstMes estado: %s", self.proveedor.display_name, lstmes_state)
+
+        # Esperar que exista en DOM (aunque este oculto) antes de wait visible
+        page.wait_for_selector("#LstMes, select[name='LstMes']", state="attached", timeout=20000)
 
         self._select_mes(page)
         page.wait_for_timeout(1000)
