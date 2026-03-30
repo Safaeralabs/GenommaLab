@@ -129,14 +129,11 @@ class PortalXeon(BasePortal):
         self.logger.info("[%s] Navegando a paretto: %s", self.proveedor.display_name, paretto_url)
 
         page.goto(paretto_url, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(2000)
+        self.logger.info("[%s] URL tras carga paretto: %s", self.proveedor.display_name, page.url)
 
-        # home.php?view=paretto redirige (POST) a Reportes_Paretto.php en otro servidor
-        page.wait_for_url("**/Reportes_Paretto.php**", timeout=15000)
-        self.logger.info("[%s] Redirigido a: %s", self.proveedor.display_name, page.url)
-        page.wait_for_timeout(1000)
-
-        # El formulario esta directamente en la pagina destino, sin frame
-        page.wait_for_selector("#LstMes, select[name='LstMes']", timeout=15000)
+        # El select LstMes se carga dinamicamente via JS en #BOX; esperar a que aparezca
+        page.wait_for_selector("#LstMes, select[name='LstMes']", timeout=20000)
 
         self._select_mes(page)
         page.wait_for_timeout(1000)
@@ -161,16 +158,10 @@ class PortalXeon(BasePortal):
         self.logger.info("[%s] Navegando a listaprecios: %s", self.proveedor.display_name, lista_url)
 
         page.goto(lista_url, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(2000)
+        self.logger.info("[%s] URL tras carga listaprecios: %s", self.proveedor.display_name, page.url)
 
-        # Igual que paretto: redirige a otro servidor; esperamos cualquier cambio de URL
-        try:
-            page.wait_for_url(lambda url: "home.php" not in url, timeout=10000)
-        except PlaywrightTimeoutError:
-            pass
-        self.logger.info("[%s] URL listaprecios: %s", self.proveedor.display_name, page.url)
-        page.wait_for_timeout(1000)
-
-        page.wait_for_selector("input[name='BtoBuscar'], #BtoBuscar", timeout=15000)
+        page.wait_for_selector("input[name='BtoBuscar'], #BtoBuscar", timeout=20000)
         self.logger.info("[%s] Buscando inventario...", self.proveedor.display_name)
         page.locator("input[name='BtoBuscar'], #BtoBuscar, input[value*='uscar' i]").first.click()
 
@@ -185,18 +176,6 @@ class PortalXeon(BasePortal):
             page.locator("a[href*='Exportar']").first.click()
 
         return self._save_download(dl.value, "inventario")
-
-    def _get_content_frame(self, page: Page):
-        page.wait_for_timeout(1000)
-        content_frames = [f for f in page.frames if f is not page.main_frame]
-        if not content_frames:
-            raise RuntimeError("No se encontro el frame de contenido (<object>/<iframe>) en la pagina.")
-        self.logger.debug(
-            "[%s] Frames disponibles: %s",
-            self.proveedor.display_name,
-            [f.url for f in content_frames],
-        )
-        return content_frames[0]
 
     def _select_mes(self, frame: Page) -> None:
         selected = frame.evaluate(
