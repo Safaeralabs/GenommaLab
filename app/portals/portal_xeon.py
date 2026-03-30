@@ -150,15 +150,15 @@ class PortalXeon(BasePortal):
             raise RuntimeError("No se encontro el link de Paretto en el menu de home.php.")
 
         paretto_link.click()
-        page.wait_for_timeout(2000)
+        page.wait_for_load_state("networkidle", timeout=30000)
         self.logger.info("[%s] URL tras click paretto: %s", self.proveedor.display_name, page.url)
         page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_loaded.png"))
 
-        # Diagnostico post-click
-        box_html = page.evaluate(
-            "document.getElementById('BOX')?.innerHTML?.substring(0, 300) || '#BOX no encontrado'"
+        # Diagnostico post-click: body HTML para ver estructura real
+        body_html = page.evaluate(
+            "document.body?.innerHTML?.substring(0, 1500) || 'no body'"
         )
-        self.logger.info("[%s] #BOX HTML: %s", self.proveedor.display_name, box_html)
+        self.logger.info("[%s] Body HTML: %s", self.proveedor.display_name, body_html)
 
         page.wait_for_selector("#LstMes, select[name='LstMes']", state="attached", timeout=20000)
 
