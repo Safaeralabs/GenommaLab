@@ -131,25 +131,26 @@ class PortalXeon(BasePortal):
         page.goto(paretto_url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(2000)
 
-        # El formulario esta directamente en la pagina, no en un iframe
-        page.wait_for_selector("#LstMes, select[name='LstMes']", timeout=15000)
+        # El formulario esta dentro de un <object> que Playwright expone como frame hijo
+        frame = self._get_content_frame(page)
+        frame.wait_for_selector("#LstMes, select[name='LstMes']", timeout=15000)
 
         # Seleccionar mes — onchange="MesPastor();" rellena TxtFecIni y TxtFecFin automaticamente
-        self._select_mes(page)
+        self._select_mes(frame)
         page.wait_for_timeout(1000)
 
         self.logger.info("[%s] Buscando ventas...", self.proveedor.display_name)
-        page.locator("input[name='BtoBuscar'], #BtoBuscar, input[value*='uscar' i]").first.click()
+        frame.locator("input[name='BtoBuscar'], #BtoBuscar, input[value*='uscar' i]").first.click()
 
         try:
-            page.locator("a[href*='ParettoExportar']").wait_for(state="visible", timeout=60000)
+            frame.locator("a[href*='ParettoExportar']").wait_for(state="visible", timeout=60000)
         except PlaywrightTimeoutError:
             page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_timeout.png"))
             raise RuntimeError("Timeout esperando el link de exportacion de ventas (ParettoExportar).")
 
         self.logger.info("[%s] Exportando ventas...", self.proveedor.display_name)
         with page.expect_download(timeout=60000) as dl:
-            page.locator("a[href*='ParettoExportar']").first.click()
+            frame.locator("a[href*='ParettoExportar']").first.click()
 
         return self._save_download(dl.value, "ventas")
 
@@ -160,26 +161,37 @@ class PortalXeon(BasePortal):
         page.goto(lista_url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(2000)
 
-        page.wait_for_selector("input[name='BtoBuscar'], #BtoBuscar", timeout=15000)
+        frame = self._get_content_frame(page)
+        frame.wait_for_selector("input[name='BtoBuscar'], #BtoBuscar", timeout=15000)
         self.logger.info("[%s] Buscando inventario...", self.proveedor.display_name)
-        page.locator("input[name='BtoBuscar'], #BtoBuscar, input[value*='uscar' i]").first.click()
+        frame.locator("input[name='BtoBuscar'], #BtoBuscar, input[value*='uscar' i]").first.click()
 
         try:
-            page.locator("a[href*='Exportar']").wait_for(state="visible", timeout=60000)
+            frame.locator("a[href*='Exportar']").wait_for(state="visible", timeout=60000)
         except PlaywrightTimeoutError:
             page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_timeout.png"))
             raise RuntimeError("Timeout esperando el link de exportacion de inventario.")
 
         self.logger.info("[%s] Exportando inventario...", self.proveedor.display_name)
         with page.expect_download(timeout=60000) as dl:
-            page.locator("a[href*='Exportar']").first.click()
+            frame.locator("a[href*='Exportar']").first.click()
 
         return self._save_download(dl.value, "inventario")
 
-    def _select_mes(self, page: Page) -> None:
-        # Busca la opcion cuyo texto contiene la fecha_desde (ej: "2026-02-01")
-        # El onchange="MesPastor();" rellena TxtFecIni y TxtFecFin automaticamente
-        selected = page.evaluate(
+    def _get_content_frame(self, page: Page):
+        page.wait_for_timeout(1000)
+        content_frames = [f for f in page.frames if f is not page.main_frame]
+        if not content_frames:
+            raise RuntimeError("No se encontro el frame de contenido (<object>/<iframe>) en la pagina.")
+        self.logger.debug(
+            "[%s] Frames disponibles: %s",
+            self.proveedor.display_name,
+            [f.url for f in content_frames],
+        )
+        return content_frames[0]
+
+    def _select_mes(self, frame) -> None:
+        selected = frame.evaluate(
             """(fechaDesde) => {
                 const sel = document.getElementById('LstMes') || document.querySelector('select[name="LstMes"]');
                 if (!sel) return false;
