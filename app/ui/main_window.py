@@ -632,8 +632,13 @@ class MainWindow:
         # ── row 1: Log ────────────────────────────────────────────────────────
         log_frame = ttk.LabelFrame(panel, text="Registros de ejecución")
         log_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 4))
-        log_frame.rowconfigure(0, weight=1)
+        log_frame.rowconfigure(1, weight=1)
         log_frame.columnconfigure(0, weight=1)
+
+        ttk.Button(
+            log_frame, text="Ver log en vivo ↗",
+            command=self._open_log_terminal,
+        ).grid(row=0, column=0, sticky="w", padx=6, pady=(4, 0))
 
         self.log_text = tk.Text(
             log_frame, wrap="word", state="disabled", height=8,
@@ -641,7 +646,7 @@ class MainWindow:
             relief="flat", borderwidth=0,
             selectbackground="#BFDBFE",
         )
-        self.log_text.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        self.log_text.grid(row=1, column=0, sticky="nsew", padx=6, pady=6)
 
         # Etiquetas de color para el log
         self.log_text.tag_configure("ERROR",   foreground=CLR_ERROR)
@@ -651,7 +656,7 @@ class MainWindow:
         self.log_text.tag_configure("BOLD",    font=(*FONT_MONO[:1], FONT_MONO[1], "bold"))
 
         log_scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
-        log_scrollbar.grid(row=0, column=1, sticky="ns")
+        log_scrollbar.grid(row=1, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=log_scrollbar.set)
 
         # ── row 2: Clientes con errores ───────────────────────────────────────
@@ -1180,6 +1185,17 @@ class MainWindow:
             self.open_onedrive_button.configure(state=tk.DISABLED)
 
     # ── Log ───────────────────────────────────────────────────────────────────
+
+    def _open_log_terminal(self) -> None:
+        import subprocess
+        log_path = str(settings.LOGS_DIR / settings.LOG_FILE_NAME)
+        cmd = (
+            f'Get-Content -Path "{log_path}" -Wait -Tail 50'
+        )
+        subprocess.Popen(
+            ["powershell", "-NoExit", "-Command", cmd],
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+        )
 
     def _poll_log_queue(self) -> None:
         while True:
