@@ -1,6 +1,7 @@
 @echo off
 chcp 65001 >nul
 title RPA Panel Cliente
+set PATH=C:\Users\afper\AppData\Local\Python\bin;%PATH%
 
 echo ============================================
 echo  RPA Panel Cliente - Iniciando...
@@ -10,7 +11,7 @@ echo.
 :: Verificar Python
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Python no está instalado o no está en el PATH.
+    echo [ERROR] Python no estÃƒÂ¡ instalado o no estÃƒÂ¡ en el PATH.
     echo Por favor instala Python 3.11 o superior desde https://www.python.org
     pause
     exit /b 1
