@@ -137,8 +137,12 @@ class PortalXeon(BasePortal):
         )
         self.logger.info("[%s] Links home: %s", self.proveedor.display_name, links_info)
 
+        # Abrir submenu padre "Reportes" para que el link de paretto sea visible
+        page.locator("a:text('Reportes')").first.click()
+        page.wait_for_timeout(500)
+
         # Hacer click en el link de paretto del menu (como lo haria un usuario)
-        paretto_link = page.locator("a[href*='paretto' i], a[onclick*='paretto' i]").first
+        paretto_link = page.locator("a[href*='paretto' i]").first
         try:
             paretto_link.wait_for(state="visible", timeout=10000)
         except PlaywrightTimeoutError:
