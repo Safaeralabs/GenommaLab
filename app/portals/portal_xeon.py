@@ -129,28 +129,30 @@ class PortalXeon(BasePortal):
         self.logger.info("[%s] Navegando a paretto: %s", self.proveedor.display_name, paretto_url)
 
         page.goto(paretto_url, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(2000)
 
-        # El formulario esta dentro de un <object> que Playwright expone como frame hijo
-        frame = self._get_content_frame(page)
-        frame.wait_for_selector("#LstMes, select[name='LstMes']", timeout=15000)
+        # home.php?view=paretto redirige (POST) a Reportes_Paretto.php en otro servidor
+        page.wait_for_url("**/Reportes_Paretto.php**", timeout=15000)
+        self.logger.info("[%s] Redirigido a: %s", self.proveedor.display_name, page.url)
+        page.wait_for_timeout(1000)
 
-        # Seleccionar mes — onchange="MesPastor();" rellena TxtFecIni y TxtFecFin automaticamente
-        self._select_mes(frame)
+        # El formulario esta directamente en la pagina destino, sin frame
+        page.wait_for_selector("#LstMes, select[name='LstMes']", timeout=15000)
+
+        self._select_mes(page)
         page.wait_for_timeout(1000)
 
         self.logger.info("[%s] Buscando ventas...", self.proveedor.display_name)
-        frame.locator("input[name='BtoBuscar'], #BtoBuscar, input[value*='uscar' i]").first.click()
+        page.locator("input[name='BtoBuscar'], #BtoBuscar, input[value*='uscar' i]").first.click()
 
         try:
-            frame.locator("a[href*='ParettoExportar']").wait_for(state="visible", timeout=60000)
+            page.locator("a[href*='ParettoExportar']").wait_for(state="visible", timeout=60000)
         except PlaywrightTimeoutError:
             page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_timeout.png"))
             raise RuntimeError("Timeout esperando el link de exportacion de ventas (ParettoExportar).")
 
         self.logger.info("[%s] Exportando ventas...", self.proveedor.display_name)
         with page.expect_download(timeout=60000) as dl:
-            frame.locator("a[href*='ParettoExportar']").first.click()
+            page.locator("a[href*='ParettoExportar']").first.click()
 
         return self._save_download(dl.value, "ventas")
 
@@ -159,22 +161,28 @@ class PortalXeon(BasePortal):
         self.logger.info("[%s] Navegando a listaprecios: %s", self.proveedor.display_name, lista_url)
 
         page.goto(lista_url, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(2000)
 
-        frame = self._get_content_frame(page)
-        frame.wait_for_selector("input[name='BtoBuscar'], #BtoBuscar", timeout=15000)
+        # Igual que paretto: redirige a otro servidor; esperamos cualquier cambio de URL
+        try:
+            page.wait_for_url(lambda url: "home.php" not in url, timeout=10000)
+        except PlaywrightTimeoutError:
+            pass
+        self.logger.info("[%s] URL listaprecios: %s", self.proveedor.display_name, page.url)
+        page.wait_for_timeout(1000)
+
+        page.wait_for_selector("input[name='BtoBuscar'], #BtoBuscar", timeout=15000)
         self.logger.info("[%s] Buscando inventario...", self.proveedor.display_name)
-        frame.locator("input[name='BtoBuscar'], #BtoBuscar, input[value*='uscar' i]").first.click()
+        page.locator("input[name='BtoBuscar'], #BtoBuscar, input[value*='uscar' i]").first.click()
 
         try:
-            frame.locator("a[href*='Exportar']").wait_for(state="visible", timeout=60000)
+            page.locator("a[href*='Exportar']").wait_for(state="visible", timeout=60000)
         except PlaywrightTimeoutError:
             page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_timeout.png"))
             raise RuntimeError("Timeout esperando el link de exportacion de inventario.")
 
         self.logger.info("[%s] Exportando inventario...", self.proveedor.display_name)
         with page.expect_download(timeout=60000) as dl:
-            frame.locator("a[href*='Exportar']").first.click()
+            page.locator("a[href*='Exportar']").first.click()
 
         return self._save_download(dl.value, "inventario")
 
@@ -190,7 +198,7 @@ class PortalXeon(BasePortal):
         )
         return content_frames[0]
 
-    def _select_mes(self, frame) -> None:
+    def _select_mes(self, frame: Page) -> None:
         selected = frame.evaluate(
             """(fechaDesde) => {
                 const sel = document.getElementById('LstMes') || document.querySelector('select[name="LstMes"]');
