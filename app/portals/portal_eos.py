@@ -1,5 +1,3 @@
-"""Playwright implementation for EOS Consultores / Megatiendas sales downloads."""
-
 from __future__ import annotations
 
 import csv
@@ -29,7 +27,6 @@ PROVIDER_FILTER = "genom"
 
 
 class PortalEOS(BasePortal):
-    """EOS Consultores workflow: login, filter, download monthly CSV for Megatiendas."""
 
     def __init__(
         self,
@@ -90,16 +87,13 @@ class PortalEOS(BasePortal):
                 except Exception:
                     pass
 
-        # 1. Renombrar y llevar el archivo virgen a OneDrive
         today = datetime.now()
         renamed = self._rename_file(raw_csv, today)
         self._sync_to_bi_onedrive(renamed, week, year)
 
-        # 2. Calcular delta vs semana anterior → SO (ventas semanales)
         delta_csv = self._compute_week_delta(renamed, week, year)
         ventas_file = delta_csv if delta_csv is not None else renamed
 
-        # 3. Inventario derivado: mismas filas del delta con unidades × 4
         inv_file = self._build_inventario_csv(ventas_file, week)
 
         files_for_homologation = [ventas_file]
@@ -116,8 +110,6 @@ class PortalEOS(BasePortal):
             downloaded_files=files_for_homologation,
             portal_handled_sync=True,
         )
-
-    # ── Helpers de navegación ─────────────────────────────────────────────────
 
     def _login(self, page: Page) -> None:
         usuario_field = page.locator("#user_login")
@@ -141,31 +133,24 @@ class PortalEOS(BasePortal):
         tab = page.get_by_text("DESCARGAS VENTAS", exact=True)
         tab.wait_for(state="visible", timeout=15000)
         tab.click()
-        # La tabla puede tardar varios minutos en cargar (datos pesados).
-        # Esperamos hasta que aparezca "Showing X to Y of Z entries" o el boton CSV.
         self.logger.info("[%s] Esperando carga de tabla DESCARGAS VENTAS...", self.proveedor.display_name)
         page.locator(".dataTables_info, .dataTables_wrapper, button:has-text('CSV')").first.wait_for(
-            state="visible", timeout=300000  # hasta 5 minutos
+            state="visible", timeout=300000
         )
         self.logger.info("[%s] Tabla cargada.", self.proveedor.display_name)
 
     def _apply_filters(self, page: Page, month: int, year: int) -> None:
-        """Apply proveedor, mes and año filters using tfoot input placeholders."""
         self.logger.info(
             "[%s] Aplicando filtros: proveedor=%s mes=%s anio=%s",
             self.proveedor.display_name, PROVIDER_FILTER, month, year,
         )
-        # Los filtros son inputs en <tfoot> con placeholders exactos: MES, ANIO, PROVEEDOR
         self._fill_tfoot_filter(page, "MES", str(month))
         self._fill_tfoot_filter(page, "ANIO", str(year))
         self._fill_tfoot_filter(page, "PROVEEDOR", PROVIDER_FILTER)
-
-        # Esperar a que la tabla se refresque con los filtros aplicados
         page.wait_for_timeout(5000)
         self.logger.info("[%s] Filtros aplicados.", self.proveedor.display_name)
 
     def _fill_tfoot_filter(self, page: Page, placeholder: str, value: str) -> None:
-        """Fill a tfoot filter input by its exact placeholder attribute."""
         inp = page.locator(f"tfoot input[placeholder='{placeholder}']")
         inp.wait_for(state="visible", timeout=10000)
         inp.click()
@@ -174,7 +159,6 @@ class PortalEOS(BasePortal):
         page.wait_for_timeout(500)
 
     def _download_csv(self, page: Page) -> Path:
-        """Click the CSV button and save the download."""
         self.logger.info("[%s] Descargando CSV.", self.proveedor.display_name)
         csv_button = page.get_by_role("button", name="CSV")
         if not csv_button.count():
@@ -189,32 +173,22 @@ class PortalEOS(BasePortal):
         self.logger.info("[%s] CSV guardado en: %s", self.proveedor.display_name, dest)
         return dest
 
-    # ── Post-proceso ──────────────────────────────────────────────────────────
-
     def _rename_file(self, csv_path: Path, download_date: datetime) -> Path:
-        """Rename to Megatiendas_DDMMYYYY.csv"""
         new_name = f"Megatiendas_{download_date.strftime('%d%m%Y')}.csv"
         new_path = csv_path.parent / new_name
         shutil.move(str(csv_path), str(new_path))
         return new_path
 
-
     def _compute_week_delta(self, current_csv: Path, week: int, year: int) -> Path | None:
-        """Devuelve un CSV con solo las filas nuevas respecto a la semana anterior.
-
-        Busca el archivo de S{week-1} en la misma ruta de OneDrive. Si no existe
-        (primera semana del mes o primer uso), retorna None (se usa el mes completo).
-        """
         base = settings.ONEDRIVE_BI_MEGATIENDAS_BASE
         if base is None:
             return None
 
-        # Calcular semana anterior
         prev_week = week - 1
         prev_year = year
         if prev_week == 0:
             prev_year -= 1
-            prev_week = date(prev_year, 12, 28).isocalendar()[1]  # última semana del año anterior
+            prev_week = date(prev_year, 12, 28).isocalendar()[1]
 
         prev_dir = base / str(prev_year) / f"S{prev_week:02d}"
         prev_files = sorted(prev_dir.glob("Megatiendas_*.csv")) if prev_dir.exists() else []
@@ -226,7 +200,7 @@ class PortalEOS(BasePortal):
             )
             return None
 
-        prev_csv = prev_files[-1]  # el más reciente si hubiera varios
+        prev_csv = prev_files[-1]
         self.logger.info(
             "[%s] Comparando con semana anterior: %s", self.proveedor.display_name, prev_csv.name
         )
@@ -263,18 +237,12 @@ class PortalEOS(BasePortal):
         return delta_path
 
     def _build_inventario_csv(self, ventas_csv: Path, week: int) -> Path | None:
-        """Genera un CSV de inventario a partir del delta de ventas con unidades × 4.
-
-        El archivo resultante se llama Megatiendas_inventario_S{week}.csv y el
-        clasificador de archivos lo etiquetará como 'inventario' automáticamente.
-        """
         rows = self._read_csv_rows(ventas_csv)
         if len(rows) < 2:
             return None
 
         header = rows[0]
 
-        # Localizar la columna de unidades (VENTA_UNIDADES o similar)
         units_col: int | None = None
         for idx, col in enumerate(header):
             norm = col.strip().upper().replace("_", "").replace(" ", "")
@@ -312,7 +280,6 @@ class PortalEOS(BasePortal):
         return inv_path
 
     def _read_csv_rows(self, csv_path: Path) -> list[list[str]]:
-        """Lee todas las filas de un CSV, probando distintos encodings y delimitadores."""
         for encoding in ("utf-8-sig", "latin-1", "utf-8"):
             try:
                 with open(csv_path, newline="", encoding=encoding) as f:
@@ -328,7 +295,6 @@ class PortalEOS(BasePortal):
         return []
 
     def _sync_to_bi_onedrive(self, file_path: Path, week: int, year: int) -> None:
-        """Copy the file to OneDrive/BI/Data Clientes/TT/Nuevo/1. B2B/Megatiendas/{year}/S{week:02d}/"""
         base = settings.ONEDRIVE_BI_MEGATIENDAS_BASE
         if base is None:
             self.logger.debug("[%s] ONEDRIVE_BI_MEGATIENDAS_BASE no configurado, sync omitido.", self.proveedor.display_name)
@@ -351,10 +317,7 @@ class PortalEOS(BasePortal):
         except OSError as exc:
             self.logger.warning("[%s] Error copiando a OneDrive BI: %s", self.proveedor.display_name, exc)
 
-    # ── Utilidades ────────────────────────────────────────────────────────────
-
     def _resolve_week_year_month(self) -> tuple[int, int, int]:
-        """Derive ISO week, year and month from proveedor.fecha_desde."""
         try:
             d = date.fromisoformat(self.proveedor.fecha_desde)
         except (ValueError, TypeError):

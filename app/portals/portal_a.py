@@ -1,5 +1,3 @@
-"""Playwright implementation for Abako sales and inventory exports."""
-
 from __future__ import annotations
 
 import logging
@@ -39,7 +37,6 @@ INVENTORY_ROW_FIELDS = [
 
 
 class PortalA(BasePortal):
-    """Abako workflow for sales and inventory exports."""
 
     def __init__(
         self,
@@ -52,18 +49,10 @@ class PortalA(BasePortal):
         self.logger = logger
 
     def ejecutar(self) -> ExecutionResult:
-        """Log in, export sales and inventory independently, return the outcome.
-
-        A partial success (only one file downloaded) is still returned with
-        success=True so the orchestrator can postprocess whatever was obtained.
-        On automatic retry, files already downloaded in the previous attempt are
-        reused from disk so the portal does not re-download them unnecessarily.
-        """
         self.download_dir.mkdir(parents=True, exist_ok=True)
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
         error_screenshot_path = self._build_screenshot_path("error")
 
-        # ── Reutilizar archivos recientes (evita repetir en reintento automático) ──
         ventas_cached = self._find_recent_download("ventas")
         inventario_cached = self._find_recent_download("inventario")
 
@@ -78,7 +67,6 @@ class PortalA(BasePortal):
                 self.proveedor.display_name, inventario_cached.name,
             )
 
-        # Si ambos ya están disponibles no hace falta abrir el browser
         if ventas_cached and inventario_cached:
             names = f"{ventas_cached.name} | {inventario_cached.name}"
             self.logger.info("[%s] Ambos archivos en caché, sin necesidad de acceder al portal.", self.proveedor.display_name)
@@ -96,7 +84,6 @@ class PortalA(BasePortal):
             browser = playwright.chromium.launch(headless=self._headless_mode(), channel=settings.BROWSER_CHANNEL)
             context = browser.new_context(accept_downloads=True)
             page = context.new_page()
-            # Partir de los archivos ya obtenidos en el intento previo (si los hay)
             downloaded_files: list[Path] = []
             if ventas_cached:
                 downloaded_files.append(ventas_cached)
@@ -112,41 +99,35 @@ class PortalA(BasePortal):
                 self._login(page)
                 login_ok = True
 
-                # ── Exportación de ventas (solo si no estaba en caché) ────
                 if not ventas_cached:
                     try:
                         sales_file = self._run_sales_export(page)
                         downloaded_files.append(sales_file)
                         self.logger.info(
                             "[%s] Ventas descargadas: %s",
-                            self.proveedor.display_name,
-                            sales_file.name,
+                            self.proveedor.display_name, sales_file.name,
                         )
                     except (PlaywrightTimeoutError, PlaywrightError, Exception) as exc:
                         partial_errors.append(f"Ventas: {exc}")
                         self.logger.error(
                             "[%s] Error al exportar ventas: %s",
-                            self.proveedor.display_name,
-                            exc,
+                            self.proveedor.display_name, exc,
                         )
                         self._recover_to_home(page)
 
-                # ── Exportación de inventario (solo si no estaba en caché) ─
                 if not inventario_cached:
                     try:
                         inventory_file = self._run_inventory_export(page)
                         downloaded_files.append(inventory_file)
                         self.logger.info(
                             "[%s] Inventario descargado: %s",
-                            self.proveedor.display_name,
-                            inventory_file.name,
+                            self.proveedor.display_name, inventory_file.name,
                         )
                     except (PlaywrightTimeoutError, PlaywrightError, Exception) as exc:
                         partial_errors.append(f"Inventario: {exc}")
                         self.logger.error(
                             "[%s] Error al exportar inventario: %s",
-                            self.proveedor.display_name,
-                            exc,
+                            self.proveedor.display_name, exc,
                         )
 
             except (PlaywrightTimeoutError, PlaywrightError, Exception) as exc:
@@ -169,7 +150,6 @@ class PortalA(BasePortal):
                 except Exception:
                     pass
 
-            # ── Sin ningún archivo descargado → fallo total ───────────────
             if not downloaded_files:
                 return ExecutionResult(
                     proveedor=self.proveedor.display_name,
@@ -179,40 +159,31 @@ class PortalA(BasePortal):
                     screenshot_path=error_screenshot_path if error_screenshot_path.exists() else None,
                 )
 
-            # ── Al menos un archivo descargado → éxito (parcial o total) ─
             names = " | ".join(f.name for f in downloaded_files)
             message = f"Descargados: {names}"
             if partial_errors:
                 message += " | Parcial: " + " | ".join(partial_errors)
                 self.logger.warning(
                     "[%s] Descarga parcial (%s/2 archivos).",
-                    self.proveedor.display_name,
-                    len(downloaded_files),
+                    self.proveedor.display_name, len(downloaded_files),
                 )
             else:
                 self.logger.info(
                     "[%s] Exportaciones completas: %s",
-                    self.proveedor.display_name,
-                    names,
+                    self.proveedor.display_name, names,
                 )
 
             return ExecutionResult(
                 proveedor=self.proveedor.display_name,
                 portal_tipo=self.proveedor.portal_tipo,
-                success=True,          # permite postprocesado incluso en descarga parcial
-                needs_retry=bool(partial_errors),  # reintento automático si faltó algún archivo
+                success=True,
+                needs_retry=bool(partial_errors),
                 message=message,
                 downloaded_file=downloaded_files[0],
                 downloaded_files=downloaded_files,
             )
 
     def _find_recent_download(self, tipo: str, max_age_minutes: int = 240) -> Path | None:
-        """Devuelve un archivo descargado recientemente del tipo indicado ('ventas'/'inventario').
-
-        Sirve para que el reintento automático reutilice lo que ya descargó
-        el intento anterior y no vuelva a ejecutar la misma descarga.
-        El umbral de 4 horas cubre ejecuciones largas con muchos proveedores.
-        """
         cutoff = time.time() - max_age_minutes * 60
         try:
             candidates = [
@@ -223,7 +194,6 @@ class PortalA(BasePortal):
             ]
         except OSError:
             return None
-        # Si hay varios, devolver el más reciente
         return max(candidates, key=lambda f: f.stat().st_mtime) if candidates else None
 
     def _run_sales_export(self, page: Page) -> Path:
@@ -237,11 +207,17 @@ class PortalA(BasePortal):
         self._open_inventory_report(page)
         self._open_inventory_filter_modal(page)
         self._configure_inventory_search(page)
-        self._apply_provider_filter(page, DEFAULT_PROVIDER_FILTER_OPTIONS)
+        try:
+            self._apply_provider_filter(page, DEFAULT_PROVIDER_FILTER_OPTIONS)
+        except (RuntimeError, PlaywrightTimeoutError, PlaywrightError) as exc:
+            self.logger.warning(
+                "[%s] No se pudo aplicar filtro de proveedor en inventario (%s); exportando sin filtro.",
+                self.proveedor.display_name, exc,
+            )
         return self._export_excel(page, tipo="inventario")
 
     def _login(self, page: Page) -> None:
-        # Algunos portales muestran una pantalla de seleccion de sede ANTES de las credenciales.
+        # Algunos portales muestran seleccion de sede antes de pedir credenciales
         self._handle_branch_selection(page)
 
         self.logger.info("[%s] Intentando login en Abako.", self.proveedor.display_name)
@@ -276,7 +252,7 @@ class PortalA(BasePortal):
         password_input.fill(self.proveedor.password)
         ingresar_button.click()
 
-        # Algunos portales muestran la seleccion de sede DESPUES de ingresar credenciales.
+        # Algunos portales muestran seleccion de sede despues de ingresar credenciales
         page.wait_for_timeout(2000)
         self._handle_branch_selection(page)
 
@@ -285,19 +261,12 @@ class PortalA(BasePortal):
         self.logger.info("[%s] Login completado.", self.proveedor.display_name)
 
     def _handle_branch_selection(self, page: Page) -> None:
-        """Click a branch/sede button if the selection screen is shown.
-
-        Can be called before or after entering credentials — detects the context
-        automatically and skips silently if no selection is needed.
-        """
-        # Si ya esta en el portal principal, no hay nada que hacer.
         try:
             if page.locator("text=Portal Web").first.is_visible():
                 return
         except Exception:
             pass
 
-        # Intentar nombres conocidos primero (coincidencia exacta).
         known_options = ["Bg Duitama", "Bg Soraca"]
         for option in known_options:
             try:
@@ -305,8 +274,7 @@ class PortalA(BasePortal):
                 if button.count() and button.first.is_visible():
                     self.logger.info(
                         "[%s] Seleccionando sede del portal: %s",
-                        self.proveedor.display_name,
-                        option,
+                        self.proveedor.display_name, option,
                     )
                     button.first.click()
                     page.wait_for_timeout(1500)
@@ -314,7 +282,6 @@ class PortalA(BasePortal):
             except Exception:
                 continue
 
-        # Si el formulario de login es visible, no hace falta seleccionar sede.
         login_visible = False
         for sel in ("input[placeholder='usuario']", "input[name='usuario']", "#cajas"):
             try:
@@ -326,7 +293,6 @@ class PortalA(BasePortal):
         if login_visible:
             return
 
-        # Fallback generico: buscar cualquier boton visible y prominente en la pagina.
         broad = page.locator(
             "button, [role='button'], input[type='submit'], input[type='button']"
         )
@@ -341,12 +307,11 @@ class PortalA(BasePortal):
                     continue
                 box = el.bounding_box()
                 if box and box["width"] < 60:
-                    continue  # ignorar botones pequeños (iconos, cerrar, etc.)
+                    continue
                 label = el.inner_text().strip() or el.get_attribute("value") or f"elemento #{i}"
                 self.logger.info(
                     "[%s] Seleccionando sede del portal (fallback): %s",
-                    self.proveedor.display_name,
-                    label,
+                    self.proveedor.display_name, label,
                 )
                 el.click()
                 page.wait_for_timeout(1500)
@@ -358,7 +323,6 @@ class PortalA(BasePortal):
         self.logger.info("[%s] Abriendo modulo Ventas Netas BI.", self.proveedor.display_name)
 
         page.get_by_text("Portal Web", exact=True).first.click()
-        # Usar _find_visible_option para evitar resolver elementos ocultos del submenu.
         ventas_link = self._find_visible_option(page, "Ventas")
         if ventas_link is None:
             raise RuntimeError("No se encontro el enlace visible 'Ventas' en el sidebar.")
@@ -375,13 +339,8 @@ class PortalA(BasePortal):
         self._retry_inventory_side_click(page)
         page.wait_for_timeout(2000)
 
-        # Buscar "Inventario" dentro del mega menú desplegado.
-        # Se filtra por min_x=250 Y por la proximidad vertical al encabezado "Saldos"
-        # para evitar seleccionar accidentalmente el "Inventario" del breadcrumb
-        # (que también tiene x > 250 pero está en la parte superior de la página).
         inventory_option = self._find_inventory_in_dropdown(page)
         if inventory_option is None:
-            # Fallback: cualquier opción con min_x=250 (comportamiento original)
             inventory_option = self._find_visible_option(page, "Inventario", min_x=250)
         if inventory_option is None:
             raise RuntimeError("No se encontro la opcion 'Inventario' dentro del mega menu.")
@@ -389,9 +348,6 @@ class PortalA(BasePortal):
         inventory_option.click(force=True)
         page.wait_for_timeout(1200)
 
-        # Cerrar el mega menú si quedó abierto tras la navegación.
-        # Esto ocurre cuando se clickeó el breadcrumb en vez del ítem del menú,
-        # o cuando el portal no cierra el dropdown automáticamente.
         self._ensure_dropdown_closed(page)
 
         page.locator("text=Portal Web").first.wait_for(timeout=30000)
@@ -414,7 +370,6 @@ class PortalA(BasePortal):
         page.locator("button.btn.btn-success").last.wait_for(timeout=30000)
 
     def _retry_inventory_side_click(self, page: Page) -> Locator:
-        """Intenta varias veces abrir el enlace lateral de Inventario cerrando menús superpuestos."""
         attempts = 0
         while attempts < 3:
             option = self._find_visible_option(page, "Inventario", max_x=250)
@@ -424,8 +379,7 @@ class PortalA(BasePortal):
 
             self.logger.debug(
                 "[%s] No se encontro el enlace lateral 'Inventario', reintentando (%s/3).",
-                self.proveedor.display_name,
-                attempts + 1,
+                self.proveedor.display_name, attempts + 1,
             )
             self._dismiss_portal_menu(page)
             page.get_by_text("Portal Web", exact=True).first.click()
@@ -435,7 +389,6 @@ class PortalA(BasePortal):
         raise RuntimeError("No se encontro la opcion lateral 'Inventario' tras varios intentos.")
 
     def _dismiss_portal_menu(self, page: Page) -> None:
-        """Cierra menús flotantes presionando Esc y haciendo clic fuera si es necesario."""
         page.keyboard.press("Escape")
         page.mouse.click(10, 10)
         page.wait_for_timeout(500)
@@ -444,15 +397,12 @@ class PortalA(BasePortal):
         start_date, end_date = self._resolve_date_range()
         self.logger.info(
             "[%s] Configurando filtros de ventas: %s a %s",
-            self.proveedor.display_name,
-            start_date,
-            end_date,
+            self.proveedor.display_name, start_date, end_date,
         )
 
         page.get_by_label("Fecha Inicial").fill(start_date)
         page.get_by_label("Fecha Final").fill(end_date)
         page.locator("li.tab").filter(has_text="Campos").click()
-        # Esperar a que la lista de campos sea visible antes de hacer drag
         page.locator("#fields").wait_for(state="visible", timeout=15000)
         page.wait_for_timeout(500)
 
@@ -471,7 +421,6 @@ class PortalA(BasePortal):
         self.logger.info("[%s] Configurando campos de inventario.", self.proveedor.display_name)
 
         page.locator("li.tab").filter(has_text="Campos").click()
-        # Esperar a que la lista de campos sea visible antes de hacer drag
         page.locator("#fields").wait_for(state="visible", timeout=15000)
         page.wait_for_timeout(500)
 
@@ -494,15 +443,13 @@ class PortalA(BasePortal):
             raise ValueError("Se requiere al menos un nombre de proveedor para aplicar el filtro.")
         self.logger.info(
             "[%s] Aplicando filtro de proveedor: %s",
-            self.proveedor.display_name,
-            ", ".join(candidates),
+            self.proveedor.display_name, ", ".join(candidates),
         )
 
-        # Esperar explícitamente a que la cabecera aparezca en el grid (conexiones lentas)
         try:
             page.get_by_text("Proveedor", exact=True).first.wait_for(state="visible", timeout=60000)
         except PlaywrightTimeoutError:
-            pass  # Si no aparece, lo detectará en la siguiente línea con el mensaje claro
+            pass
 
         provider_headers = self._visible_text_locators(page, "Proveedor")
         if not provider_headers:
@@ -535,18 +482,16 @@ class PortalA(BasePortal):
                 continue
 
             visible_input.fill(normalized.lower())
-            # Esperar a que aparezcan resultados en el dropdown del filtro
             self._wait_for_filter_results(page)
 
             try:
                 provider_option = self._select_provider_option(page, candidate)
                 break
-            except RuntimeError as exc:  # pragma: no cover - fallback logic
+            except RuntimeError as exc:
                 last_error = exc
                 self.logger.debug(
                     "[%s] No se encontro '%s'; intento siguiente.",
-                    self.proveedor.display_name,
-                    candidate,
+                    self.proveedor.display_name, candidate,
                 )
                 visible_input.fill("")
                 page.wait_for_timeout(600)
@@ -558,11 +503,9 @@ class PortalA(BasePortal):
 
         provider_option.click()
         self._click_modal_confirm_button(page)
-        # Esperar a que el grid recargue tras aplicar el filtro de proveedor
         self._wait_for_grid_load(page, timeout_ms=60000)
 
     def _select_provider_option(self, page: Page, provider_name: str) -> Locator:
-        """Pick a provider option, retrying with shorter tokens if needed."""
         search_name = provider_name
 
         candidate = self._find_provider_locator(page, provider_name)
@@ -570,9 +513,7 @@ class PortalA(BasePortal):
             search_name = search_name[:-1]
             self.logger.debug(
                 "[%s] No se encontro '%s'; intentando con '%s'.",
-                self.proveedor.display_name,
-                provider_name,
-                search_name,
+                self.proveedor.display_name, provider_name, search_name,
             )
             candidate = self._find_provider_locator(page, search_name)
 
@@ -584,8 +525,7 @@ class PortalA(BasePortal):
         button = self._wait_for_confirm_button(page)
         self.logger.info(
             "[%s] Pulsando boton de confirmacion del filtro (%s).",
-            self.proveedor.display_name,
-            self._safe_button_text(button),
+            self.proveedor.display_name, self._safe_button_text(button),
         )
         button.click()
 
@@ -598,11 +538,7 @@ class PortalA(BasePortal):
                 return button
             remaining = int((deadline - time.time()) * 1000)
             last_message = f"No se encontro boton de confirmacion (restan {remaining} ms)."
-            self.logger.debug(
-                "[%s] %s",
-                self.proveedor.display_name,
-                last_message,
-            )
+            self.logger.debug("[%s] %s", self.proveedor.display_name, last_message)
             page.wait_for_timeout(500)
         raise RuntimeError("No se encontro boton de confirmacion en el modal de filtros.")
 
@@ -630,6 +566,7 @@ class PortalA(BasePortal):
                     pass
                 return button
         return None
+
     @staticmethod
     def _find_provider_locator(page: Page, text: str) -> Locator | None:
         matches = page.get_by_text(text, exact=False)
@@ -702,7 +639,6 @@ class PortalA(BasePortal):
             steps=30,
         )
         page.mouse.up()
-        # Dar tiempo al framework para confirmar el drop antes del siguiente drag
         page.wait_for_timeout(1800)
 
     def _resolve_date_range(self) -> tuple[str, str]:
@@ -827,13 +763,6 @@ class PortalA(BasePortal):
         return url
 
     def _find_inventory_in_dropdown(self, page: Page) -> Locator | None:
-        """Busca el ítem 'Inventario' dentro del mega menú desplegado.
-
-        La estrategia es ubicar primero el encabezado 'Saldos' del menú
-        y luego buscar el 'Inventario' que aparece justo debajo de él,
-        descartando el 'Inventario' del breadcrumb (y < 100 px) que tiene
-        el mismo texto pero es una ruta de navegación ya resuelta.
-        """
         try:
             saldos_loc = page.get_by_text("Saldos", exact=True).first
             saldos_box = saldos_loc.bounding_box()
@@ -847,11 +776,8 @@ class PortalA(BasePortal):
                 box = candidate.bounding_box()
                 if box is None:
                     continue
-                # Ignorar elementos en la zona de breadcrumb (y < 100)
                 if box["y"] < 100:
                     continue
-                # Buscar el más cercano verticalmente al encabezado "Saldos"
-                # y con posición x similar (mismo bloque del menú)
                 if abs(box["x"] - saldos_box["x"]) > 80:
                     continue
                 dist = abs(box["y"] - saldos_box["y"])
@@ -863,22 +789,12 @@ class PortalA(BasePortal):
             return None
 
     def _ensure_dropdown_closed(self, page: Page) -> None:
-        """Cierra el mega menú si permanece visible después de una navegación.
-
-        Detecta la presencia del menú comprobando si opciones típicas del
-        desplegable ('Sugerido', 'Inventario Proveedor') siguen visibles.
-        Si es así, intenta cerrarlas presionando Escape y haciendo clic en
-        un área neutral.
-        """
         try:
-            # Indicadores inequívocos de que el mega menú sigue abierto
             menu_indicators = [
                 page.get_by_text("Sugerido", exact=True).first,
                 page.get_by_text("Inventario Proveedor", exact=True).first,
             ]
-            menu_open = any(
-                loc.is_visible() for loc in menu_indicators
-            )
+            menu_open = any(loc.is_visible() for loc in menu_indicators)
             if menu_open:
                 self.logger.debug(
                     "[%s] Mega menú sigue abierto tras navegación; cerrando.",
@@ -886,18 +802,12 @@ class PortalA(BasePortal):
                 )
                 page.keyboard.press("Escape")
                 page.wait_for_timeout(400)
-                # Clic en el título de la página (zona neutral, lejos del menú)
                 page.mouse.click(740, 35)
                 page.wait_for_timeout(600)
         except Exception:
-            pass  # No crítico; continuar de todas formas
+            pass
 
     def _wait_for_grid_load(self, page: Page, timeout_ms: int = 90000) -> None:
-        """Espera a que el grid de DevExtreme termine de cargar.
-
-        Intenta detectar el loading panel; si no aparece en 8 s (conexión lenta),
-        espera igualmente un margen mínimo de 6 s para que la UI se estabilice.
-        """
         load_selector = (
             ".dx-loadpanel-wrapper, .dx-datagrid-load-panel, .dx-loadindicator-icon"
         )
@@ -905,14 +815,11 @@ class PortalA(BasePortal):
             page.wait_for_selector(load_selector, state="visible", timeout=8000)
             self.logger.debug("[%s] Loading indicator detectado, esperando fin de carga.", self.proveedor.display_name)
             page.wait_for_selector(load_selector, state="hidden", timeout=timeout_ms)
-            # Pequeña pausa adicional para que el DOM termine de renderizar
             page.wait_for_timeout(1500)
         except PlaywrightTimeoutError:
-            # No se detectó indicador de carga: dar margen generoso de estabilización
             page.wait_for_timeout(6000)
 
     def _wait_for_filter_results(self, page: Page, timeout_ms: int = 20000) -> None:
-        """Espera a que el dropdown del filtro de proveedor muestre resultados."""
         filter_list_selector = ".dx-list-item, .dx-checkbox-container, .dx-filterbuilder-item"
         try:
             page.wait_for_selector(filter_list_selector, state="visible", timeout=timeout_ms)
@@ -920,7 +827,6 @@ class PortalA(BasePortal):
             page.wait_for_timeout(3000)
 
     def _recover_to_home(self, page: Page) -> None:
-        """Intenta volver a la pantalla principal tras un error en una exportación."""
         try:
             page.keyboard.press("Escape")
             page.wait_for_timeout(600)
@@ -937,13 +843,11 @@ class PortalA(BasePortal):
                 pass
 
     def _take_screenshot(self, page: Page, path: Path) -> None:
-        """Toma un screenshot ignorando errores."""
         try:
             page.screenshot(path=str(path), full_page=True)
         except Exception:
             self.logger.debug(
-                "[%s] No fue posible guardar screenshot.",
-                self.proveedor.display_name,
+                "[%s] No fue posible guardar screenshot.", self.proveedor.display_name,
             )
 
     def _build_screenshot_path(self, suffix: str) -> Path:

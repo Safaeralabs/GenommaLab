@@ -1,5 +1,3 @@
-"""Execution orchestration for the RPA workflow."""
-
 from __future__ import annotations
 
 import concurrent.futures
@@ -35,13 +33,11 @@ SummaryCallback = Callable[[ExecutionSummary], None]
 ErrorsCallback = Callable[[list[ExecutionErrorDetail]], None]
 HomologationCallback = Callable[[HomologationSummary | None], None]
 ResultCallback = Callable[[ExecutionResult], None]
-WorkerStatusCallback = Callable[[str, str], None]  # (proveedor_display_name, status_text)
+WorkerStatusCallback = Callable[[str, str], None]
 
 
 @dataclass(slots=True)
 class UiCallbacks:
-    """Callbacks used by the orchestrator to update the UI."""
-
     on_status: StatusCallback
     on_progress: ProgressCallback
     on_summary: SummaryCallback
@@ -52,7 +48,6 @@ class UiCallbacks:
 
 
 class Orchestrator:
-    """Coordinates the full provider execution cycle."""
 
     def __init__(self, logger: logging.Logger, callbacks: UiCallbacks, stop_event: threading.Event) -> None:
         self.logger = logger
@@ -83,7 +78,6 @@ class Orchestrator:
         providers_override: Sequence[Proveedor] | None = None,
         provider_source: str | None = None,
     ) -> ExecutionSummary:
-        """Run all active providers from the given Excel."""
         started_at = datetime.now()
         exec_stamp = f"{started_at.strftime('%Y%m%d_%H%M%S')}_S{week:02d}_{year}"
         self.execution_dir = settings.POSTPROCESSED_DIR / exec_stamp
@@ -130,10 +124,7 @@ class Orchestrator:
         retry_flag = " (retry)" if providers_override else ""
         self.logger.info(
             "Se encontraron %s proveedores activos (Semana %s, %s)%s.",
-            total,
-            week,
-            year,
-            retry_flag,
+            total, week, year, retry_flag,
         )
 
         start_date, end_date = self._week_to_iso_range(year, week)
@@ -144,7 +135,6 @@ class Orchestrator:
             for p in providers
         ]
 
-        # Log warnings for providers requiring revision
         for p in execution_providers:
             if p.requiere_revision:
                 self.logger.warning(
@@ -174,7 +164,6 @@ class Orchestrator:
             result = None
             for attempt in range(MAX_RETRIES + 1):
                 current_proveedor = proveedor
-                # On retry, try URL alternativa if available
                 if attempt > 0 and proveedor.url_alternativa:
                     current_proveedor = replace(proveedor, login_url=proveedor.url_alternativa)
                     self.logger.info(
@@ -210,7 +199,6 @@ class Orchestrator:
                     )
 
                 if result.success:
-                    # Validate downloaded files
                     if result.downloaded_files:
                         self.callbacks.on_worker_status(proveedor.display_name, "validando archivos...")
                         invalid = []
@@ -227,7 +215,7 @@ class Orchestrator:
                                 error_type="validation_failed",
                             )
                     else:
-                        break  # success with no files to validate
+                        break
 
                 if result.success and not result.needs_retry:
                     break
@@ -252,7 +240,6 @@ class Orchestrator:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             download_results = list(executor.map(_download_one, enumerate(execution_providers, start=1)))
 
-        # Post-process sequentially to avoid file/homologation conflicts
         for index, execution_proveedor, result in download_results:
             self.callbacks.on_status(f"Postprocesando {execution_proveedor.display_name} ({index}/{total})")
             self.callbacks.on_worker_status(execution_proveedor.display_name, "postprocesando...")
@@ -319,9 +306,7 @@ class Orchestrator:
         self.callbacks.on_summary(summary)
         self.logger.info(
             "Resumen final -> Total: %s | OK: %s | Fallidos: %s",
-            total,
-            success_count,
-            failure_count,
+            total, success_count, failure_count,
         )
         if self.homologation_rows:
             failed_names = [p.display_name for p in self.last_failed_providers]
@@ -371,10 +356,7 @@ class Orchestrator:
         if self.last_error_details:
             self.callbacks.on_errors(list(self.last_error_details))
 
-    def _run_provider(
-        self,
-        proveedor: Proveedor,
-    ) -> ExecutionResult:
+    def _run_provider(self, proveedor: Proveedor) -> ExecutionResult:
         portal_class = self.portal_registry.get(proveedor.portal_tipo)
         if portal_class is None:
             raise ValueError(
@@ -415,9 +397,7 @@ class Orchestrator:
             )
         except Exception as exc:
             self.logger.exception(
-                "[%s] Error durante el postprocesado: %s",
-                proveedor.display_name,
-                exc,
+                "[%s] Error durante el postprocesado: %s", proveedor.display_name, exc,
             )
             result.success = False
             result.message = f"{result.message} | Postprocesado fallido: {exc}"
@@ -427,19 +407,11 @@ class Orchestrator:
         if not result.portal_handled_sync:
             if proveedor.onedrive_path:
                 sync_to_client_onedrive(
-                    organized_files,
-                    proveedor.onedrive_path,
-                    year,
-                    week,
-                    self.logger,
+                    organized_files, proveedor.onedrive_path, year, week, self.logger,
                 )
             else:
                 sync_downloads_to_hb(
-                    organized_files,
-                    proveedor.proveedor,
-                    year,
-                    week,
-                    self.logger,
+                    organized_files, proveedor.proveedor, year, week, self.logger,
                 )
         try:
             rows = self.homologation_writer.collect_rows(proveedor, organized_files)
@@ -448,9 +420,7 @@ class Orchestrator:
                 result.message = f"{result.message} | Homologacion filas: {len(rows)}"
         except Exception as exc:
             self.logger.exception(
-                "[%s] Error en homologacion: %s",
-                proveedor.display_name,
-                exc,
+                "[%s] Error en homologacion: %s", proveedor.display_name, exc,
             )
             result.success = False
             result.message = f"{result.message} | Homologacion fallida: {exc}"

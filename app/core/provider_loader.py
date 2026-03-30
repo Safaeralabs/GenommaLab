@@ -1,5 +1,3 @@
-"""Provider loader that switches between Excel and a JSON catalog."""
-
 from __future__ import annotations
 
 import json
@@ -17,7 +15,6 @@ LOGGER = logging.getLogger(__name__)
 
 
 class ProviderLoader:
-    """Load providers from Excel or from a structured catalog."""
 
     def load(self, source: str | None = None, excel_path: Path | None = None) -> list[Proveedor]:
         normalized = (source or settings.PROVIDERS_SOURCE).strip().lower()
@@ -65,6 +62,7 @@ class ProviderLoader:
                 carpeta=ExcelReader._as_text(self._find_value(normalized, ("carpeta", "folder"))),
                 onedrive_path=ExcelReader._as_text(self._find_value(normalized, ("onedrive_carpeta", "onedrive_path"))),
                 sede_subportal=ExcelReader._as_text(self._find_value(normalized, ("sede_subportal", "sede"))),
+                cadena=ExcelReader._as_text(self._find_value(normalized, ("cadena",))),
                 requiere_revision=ExcelReader._as_bool(self._find_value(normalized, ("requiere_revision", "requiere_rev", "revision"))),
                 notas_operativas=ExcelReader._as_text(self._find_value(normalized, ("notas_operativas", "notas"))),
                 conflictos_detectados=ExcelReader._as_text(self._find_value(normalized, ("conflictos_detectados", "conflictos"))),

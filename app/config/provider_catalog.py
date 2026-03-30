@@ -1,5 +1,3 @@
-"""Fallback provider catalog used cuando no se provee un Excel."""
-
 from __future__ import annotations
 
 import json

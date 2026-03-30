@@ -1,8 +1,7 @@
-"""Xeon TAT/Mensuli portal — requests-based (no browser needed)."""
-
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import socket
@@ -11,6 +10,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
 
 import requests
+from playwright.sync_api import sync_playwright
 
 from app.config import settings
 from app.core.models import ExecutionResult, Proveedor
@@ -20,7 +20,6 @@ _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 
 class PortalXeon(BasePortal):
-    """Xeon workflow: login → Paretto de Ventas → Lista de Precios."""
 
     def __init__(
         self,
@@ -32,12 +31,9 @@ class PortalXeon(BasePortal):
         super().__init__(proveedor, download_dir, screenshot_dir)
         self.logger = logger
 
-    # ── Punto de entrada ──────────────────────────────────────────────────────
-
     def ejecutar(self) -> ExecutionResult:
         self.download_dir.mkdir(parents=True, exist_ok=True)
 
-        # Verificar VPN antes de cualquier llamada
         host, port = self._parse_host_port()
         if not self._is_reachable(host, port):
             msg = f"VPN no activa o portal inaccesible ({host}:{port})."
@@ -52,11 +48,13 @@ class PortalXeon(BasePortal):
         week, year = self._resolve_week_year()
         zona = self._extract_zona()
 
-        session = requests.Session()
-        session.headers.update({"User-Agent": _UA})
-
         try:
-            self._login(session)
+            cookies = self._login_and_get_cookies()
+
+            session = requests.Session()
+            session.headers.update({"User-Agent": _UA})
+            for c in cookies:
+                session.cookies.set(c["name"], c["value"], domain=c.get("domain", ""))
 
             backend_url, qs = self._resolve_backend_url(session, "paretto")
             ventas_path = self._download_ventas(session, backend_url, qs)
@@ -100,43 +98,46 @@ class PortalXeon(BasePortal):
             portal_handled_sync=True,
         )
 
-    # ── Login ─────────────────────────────────────────────────────────────────
+    def _login_and_get_cookies(self) -> list[dict]:
+        login_url = self._base_url()
+        self.logger.info("[%s] Login (Playwright) en %s", self.proveedor.display_name, login_url)
 
-    def _login(self, session: requests.Session) -> None:
-        url = self._base_url()
-        self.logger.info("[%s] Login en %s", self.proveedor.display_name, url)
+        headless = os.getenv("RPA_HEADLESS", "0").strip().lower() in {"1", "true", "yes", "si"}
 
-        # GET primero para obtener cookies de sesión y campos ocultos del form
-        resp = session.get(url, timeout=30)
-        resp.raise_for_status()
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=headless, channel=settings.BROWSER_CHANNEL)
+            context = browser.new_context()
+            page = context.new_page()
 
-        # Extraer campos hidden del formulario de login (si los hay)
-        hidden = dict(re.findall(
-            r'<input[^>]+type=["\']hidden["\'][^>]+name=["\']([^"\']+)["\'][^>]+value=["\']([^"\']*)["\']',
-            resp.text, re.IGNORECASE,
-        ))
+            page.goto(login_url, wait_until="domcontentloaded", timeout=60000)
+            page.screenshot(path=str(self.screenshot_dir / "xeon_01_login_page.png"))
 
-        post_data = {
-            **hidden,
-            "username": self.proveedor.usuario,
-            "password": self.proveedor.password,
-        }
+            user_loc = page.locator(
+                "input[name='usuario'], input[name='username'], input[name='user'], "
+                "input[placeholder*='suario' i], input[placeholder*='sername' i]"
+            ).first
+            user_loc.fill(self.proveedor.usuario)
 
-        resp = session.post(url, data=post_data, allow_redirects=True, timeout=30)
-        resp.raise_for_status()
+            page.locator("input[type='password']").first.fill(self.proveedor.password)
+            page.screenshot(path=str(self.screenshot_dir / "xeon_02_filled.png"))
 
-        # Detectar login fallido: si el campo "username" sigue presente, no entramos
-        if re.search(r'<input[^>]+name=["\']username["\']', resp.text, re.IGNORECASE):
-            raise RuntimeError("Login fallido: credenciales incorrectas o el portal no aceptó la sesión.")
+            page.get_by_text("Ingresar", exact=False).click()
+            page.wait_for_timeout(3000)
+            page.screenshot(path=str(self.screenshot_dir / "xeon_03_after_click.png"))
+            self.logger.info("[%s] URL tras click: %s", self.proveedor.display_name, page.url)
 
-        self.logger.info("[%s] Login OK.", self.proveedor.display_name)
+            page.wait_for_url("**/home.php**", timeout=30000)
 
-    # ── Resolución de URL de backend ──────────────────────────────────────────
+            cookies = context.cookies()
+            context.close()
+            browser.close()
+
+        self.logger.info("[%s] Login OK — %d cookies obtenidas.", self.proveedor.display_name, len(cookies))
+        return cookies
 
     def _resolve_backend_url(
         self, session: requests.Session, view: str
     ) -> tuple[str, dict[str, str]]:
-        """GET frontend home.php?view=<view> y extrae el iframe src con los parámetros de usuario."""
         frontend = self._base_url() + f"home.php?view={view}"
         resp = session.get(frontend, timeout=30)
         resp.raise_for_status()
@@ -160,8 +161,6 @@ class PortalXeon(BasePortal):
         )
         return base, qs
 
-    # ── Ventas (Paretto) ──────────────────────────────────────────────────────
-
     def _download_ventas(
         self,
         session: requests.Session,
@@ -175,16 +174,14 @@ class PortalXeon(BasePortal):
             self.proveedor.fecha_hasta,
         )
 
-        # 1. GET página para obtener opciones de mes
         resp = session.get(backend_url, params=qs, timeout=30)
         resp.raise_for_status()
         mes_value = self._find_mes_value(resp.text)
         self.logger.info("[%s] Mes seleccionado: %s", self.proveedor.display_name, mes_value)
 
-        # 2. POST formulario con fechas y mes
         form = {
             "LstMes":      mes_value,
-            "TxtFecIni":   self.proveedor.fecha_desde,   # YYYY-MM-DD
+            "TxtFecIni":   self.proveedor.fecha_desde,
             "TxtFecFin":   self.proveedor.fecha_hasta,
             "TxtSistema":  qs.get("S", "B"),
             "TxtSucursal": qs.get("Sucursal", self._extract_zona()),
@@ -197,13 +194,10 @@ class PortalXeon(BasePortal):
         resp = session.post(backend_url, params=qs, data=form, timeout=60)
         resp.raise_for_status()
 
-        # 3. Encontrar link de exportar Excel en la respuesta
         export_url = self._find_export_href(resp.text, backend_url, "ParettoExportar")
         self.logger.info("[%s] Export URL ventas: %s", self.proveedor.display_name, export_url)
 
         return self._download_file(session, export_url, "ventas")
-
-    # ── Inventario (Lista de Precios) ─────────────────────────────────────────
 
     def _download_inventario(
         self,
@@ -213,11 +207,9 @@ class PortalXeon(BasePortal):
     ) -> Path:
         self.logger.info("[%s] Descargando inventario (Lista de Precios).", self.proveedor.display_name)
 
-        # 1. GET página
         resp = session.get(backend_url, params=qs, timeout=30)
         resp.raise_for_status()
 
-        # 2. POST formulario (buscar todos los productos)
         form = {
             "TxtSucursal": qs.get("Sucursal", self._extract_zona()),
             "TxtSistema":  qs.get("S", "B"),
@@ -229,16 +221,12 @@ class PortalXeon(BasePortal):
         resp = session.post(backend_url, params=qs, data=form, timeout=60)
         resp.raise_for_status()
 
-        # 3. Encontrar link de exportar Excel
         export_url = self._find_export_href(resp.text, backend_url, "Exportar")
         self.logger.info("[%s] Export URL inventario: %s", self.proveedor.display_name, export_url)
 
         return self._download_file(session, export_url, "inventario")
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
     def _find_mes_value(self, html: str) -> str:
-        """Busca en el HTML el value del <option> que corresponde al mes de fecha_desde."""
         d = date.fromisoformat(self.proveedor.fecha_desde)
         year_str = str(d.year)
         month_str = f"{d.month:02d}"
@@ -256,13 +244,10 @@ class PortalXeon(BasePortal):
         )
 
     def _find_export_href(self, html: str, backend_url: str, keyword: str) -> str:
-        """Localiza el href del link de exportar Excel en el HTML de resultados."""
         hrefs = re.findall(r'href=["\']([^"\']+)["\']', html, re.IGNORECASE)
-        # Primero buscar por keyword exacto
         for href in hrefs:
             if keyword.lower() in href.lower():
                 return urljoin(backend_url, href)
-        # Fallback: cualquier link que mencione exportar/excel
         for href in hrefs:
             if any(w in href.lower() for w in ("exportar", "excel", "export")):
                 return urljoin(backend_url, href)
@@ -270,16 +255,12 @@ class PortalXeon(BasePortal):
             f"No se encontro link de exportacion (keyword='{keyword}') en la respuesta del portal."
         )
 
-    def _download_file(
-        self, session: requests.Session, url: str, tipo: str
-    ) -> Path:
-        """Descarga el archivo desde url y lo guarda en download_dir."""
+    def _download_file(self, session: requests.Session, url: str, tipo: str) -> Path:
         resp = session.get(url, stream=True, timeout=120)
         resp.raise_for_status()
 
-        # Intentar nombre desde Content-Disposition
         cd = resp.headers.get("Content-Disposition", "")
-        name_match = re.search(r'filename[^;=\n]*=(["\']?)([^"\';\n]+)\1', cd)
+        name_match = re.search(r'filename[^;=\n]*=(["\'"]?)([^"\';\\n]+)\1', cd)
         if name_match:
             filename = name_match.group(2).strip()
         else:
@@ -316,15 +297,12 @@ class PortalXeon(BasePortal):
         except OSError as exc:
             self.logger.warning("[%s] Error sync HB: %s", self.proveedor.display_name, exc)
 
-    # ── Utilidades ────────────────────────────────────────────────────────────
-
     def _base_url(self) -> str:
         url = self.proveedor.login_url.strip()
         if not url.startswith(("http://", "https://")):
             url = "http://" + url
         if not url.endswith("/"):
             url += "/"
-        # Solo añadir /tat_nuevo/ si es IP sin path
         parsed = urlparse(url)
         host = parsed.hostname or ""
         path = parsed.path.strip("/")

@@ -1,5 +1,3 @@
-"""Base abstraction for provider portals."""
-
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -9,7 +7,6 @@ from app.core.models import ExecutionResult, Proveedor
 
 
 class BasePortal(ABC):
-    """Abstract portal contract."""
 
     def __init__(
         self,
@@ -22,5 +19,4 @@ class BasePortal(ABC):
         self.screenshot_dir = screenshot_dir
 
     @abstractmethod
-    def ejecutar(self) -> ExecutionResult:
-        """Execute the portal workflow."""
+    def ejecutar(self) -> ExecutionResult: ...

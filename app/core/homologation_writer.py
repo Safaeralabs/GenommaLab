@@ -101,7 +101,7 @@ class HomologationWriter:
                         cod_prod=cod,
                         descripcion=desc,
                         unidades=unidades,
-                        cadena=proveedor.proveedor,
+                        cadena=proveedor.cadena or proveedor.proveedor,
                         cod_local="",
                         descripcion_local=proveedor.sede_subportal or proveedor.display_name,
                         zonalocal=proveedor.sede_subportal or "",

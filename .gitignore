@@ -29,6 +29,11 @@ dist/
 output/
 build_assets/ms-playwright/
 
+# Carpetas y archivos de debug/trabajo local
+xeon/
+provecol/
+*.png
+
 # Archivos de sistema
 .DS_Store
 Thumbs.db

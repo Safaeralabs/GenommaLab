@@ -1,5 +1,3 @@
-"""Playwright implementation for Soluciones Prácticas (Provecol) downloads."""
-
 from __future__ import annotations
 
 import logging
@@ -18,13 +16,11 @@ from app.core.models import ExecutionResult, Proveedor
 from app.portals.base_portal import BasePortal
 
 
-# IDs de reporte en la plataforma
 _REP_VENTAS = 79
 _REP_INVENTARIO = 28
 
 
 class PortalProvecol(BasePortal):
-    """Soluciones Prácticas workflow: login, ventas por fecha, inventario por mes."""
 
     def __init__(
         self,
@@ -80,12 +76,10 @@ class PortalProvecol(BasePortal):
                 except Exception:
                     pass
 
-        # Renombrar a nombres estándar (preservar extensión original .xls/.xlsx)
         today = datetime.now().strftime("%d%m%Y")
         ventas_final = self._rename_file(ventas_path, f"Provecol_Ventas_{today}{ventas_path.suffix}")
         inventario_final = self._rename_file(inventario_path, f"Provecol_Inventario_{today}{inventario_path.suffix}")
 
-        # Sincronizar ambos a OneDrive BI
         self._sync_to_bi_onedrive(ventas_final, week, year)
         self._sync_to_bi_onedrive(inventario_final, week, year)
 
@@ -103,14 +97,11 @@ class PortalProvecol(BasePortal):
             portal_handled_sync=True,
         )
 
-    # ── Login ─────────────────────────────────────────────────────────────────
-
     def _login(self, page: Page) -> None:
         login_url = self.proveedor.login_url.strip()
         self.logger.info("[%s] Abriendo %s", self.proveedor.display_name, login_url)
         page.goto(login_url, wait_until="domcontentloaded", timeout=60000)
 
-        # Seleccionar empresa en el dropdown (búsqueda case-insensitive)
         empresa = self.proveedor.carpeta or self.proveedor.proveedor
         self.logger.info("[%s] Seleccionando empresa: %s", self.proveedor.display_name, empresa)
         matched = page.evaluate(f"""() => {{
@@ -132,7 +123,6 @@ class PortalProvecol(BasePortal):
             )
         page.wait_for_timeout(500)
 
-        # Usuario y contraseña
         page.locator("input[type='text'], input:not([type='password']):not([type='hidden']):not([type='submit'])").first.fill(
             self.proveedor.usuario
         )
@@ -142,18 +132,12 @@ class PortalProvecol(BasePortal):
         page.get_by_text("Iniciar Sesion", exact=False).click()
         page.wait_for_url("**/menu.aspx**", timeout=30000)
 
-    # ── Descargas ─────────────────────────────────────────────────────────────
-
     def _open_reportes(self, page: Page) -> None:
-        """Navega a la grilla de reportes desde donde sea que esté la página."""
-        # Si ya estamos en la grilla de reportes, no hacer nada
         if page.locator(f"input[type='image'][onclick*='rep={_REP_VENTAS}']").count():
             return
-        # Desde el menú principal: #btt5
         if page.locator("#btt5").is_visible():
             page.locator("#btt5").click()
         else:
-            # Desde una página de criterios: #btt10 vuelve a la grilla
             page.locator("#btt10").click()
         page.locator(f"input[type='image'][onclick*='rep={_REP_VENTAS}']").wait_for(
             state="visible", timeout=15000
@@ -161,16 +145,13 @@ class PortalProvecol(BasePortal):
         self.logger.info("[%s] Menú de reportes cargado.", self.proveedor.display_name)
 
     def _download_ventas(self, page: Page, fecha_desde: str, fecha_hasta: str) -> Path:
-        """Descarga el reporte de ventas para el rango de fechas dado."""
         self.logger.info(
             "[%s] Descargando ventas: %s → %s",
             self.proveedor.display_name, fecha_desde, fecha_hasta,
         )
-        # Hacer click en el botón de ventas por fecha desde la grilla
         page.locator(f"input[type='image'][onclick*='rep={_REP_VENTAS}']").click()
         page.wait_for_url(f"**/reportes.aspx?rep={_REP_VENTAS}**", timeout=15000)
 
-        # Fechas en formato dd-mm-yyyy
         fecha_inf = self._to_portal_date(fecha_desde)
         fecha_sup = self._to_portal_date(fecha_hasta)
 
@@ -178,12 +159,10 @@ class PortalProvecol(BasePortal):
         return self._click_exporta_excel(page, "ventas")
 
     def _download_inventario(self, page: Page, year: int, month: int) -> Path:
-        """Descarga el reporte de inventario para el año/mes dado."""
         self.logger.info(
             "[%s] Descargando inventario: %d/%02d",
             self.proveedor.display_name, year, month,
         )
-        # Volver al menú de reportes y hacer click en inventarios
         self._open_reportes(page)
         page.locator(f"input[type='image'][onclick*='rep={_REP_INVENTARIO}']").click()
         page.wait_for_url(f"**/reportes.aspx?rep={_REP_INVENTARIO}**", timeout=15000)
@@ -191,10 +170,7 @@ class PortalProvecol(BasePortal):
         self._fill_criteria(page, str(year), f"{month:02d}")
         return self._click_exporta_excel(page, "inventario")
 
-    # ── Helpers de formulario ─────────────────────────────────────────────────
-
     def _fill_criteria(self, page: Page, value1: str, value2: str) -> None:
-        """Rellena TextBox_1 y TextBox_2 del formulario de criterios."""
         tb1 = page.locator("#TextBox_1")
         tb1.wait_for(state="visible", timeout=10000)
         tb1.fill(value1)
@@ -203,7 +179,6 @@ class PortalProvecol(BasePortal):
         tb2.fill(value2)
 
     def _click_exporta_excel(self, page: Page, tipo: str) -> Path:
-        """Hace clic en el botón 'Exporta A Excel' (#btt_exp) y guarda la descarga."""
         self.logger.info("[%s] Exportando %s a Excel.", self.proveedor.display_name, tipo)
         btn = page.locator("#btt_exp")
         btn.wait_for(state="visible", timeout=10000)
@@ -217,15 +192,12 @@ class PortalProvecol(BasePortal):
         self.logger.info("[%s] Archivo guardado: %s", self.proveedor.display_name, dest)
         return dest
 
-    # ── Post-proceso ──────────────────────────────────────────────────────────
-
     def _rename_file(self, src: Path, new_name: str) -> Path:
         dest = src.parent / new_name
         shutil.move(str(src), str(dest))
         return dest
 
     def _sync_to_bi_onedrive(self, file_path: Path, week: int, year: int) -> None:
-        """Copia el archivo a OneDrive/BI/Data Clientes/TT/Nuevo/1. B2B/Provecol/{year}/S{week:02d}/"""
         base = settings.ONEDRIVE_BI_PROVECOL_BASE
         if base is None:
             self.logger.debug(
@@ -256,10 +228,7 @@ class PortalProvecol(BasePortal):
                 self.proveedor.display_name, exc,
             )
 
-    # ── Utilidades ────────────────────────────────────────────────────────────
-
     def _base_url(self) -> str:
-        """Retorna la URL base para construir rutas de reportes (ej: .../next)."""
         return self.proveedor.login_url.rstrip("/")
 
     def _resolve_week_year_month(self) -> tuple[int, int, int]:
@@ -273,7 +242,6 @@ class PortalProvecol(BasePortal):
 
     @staticmethod
     def _to_portal_date(iso_date: str) -> str:
-        """Convierte 'yyyy-mm-dd' a 'dd-mm-yyyy' (formato del portal)."""
         try:
             d = datetime.strptime(iso_date, "%Y-%m-%d")
             return d.strftime("%d-%m-%Y")

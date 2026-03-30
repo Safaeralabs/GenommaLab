@@ -1,5 +1,3 @@
-"""Central project settings and packaging-aware paths."""
-
 from __future__ import annotations
 
 import os
@@ -22,7 +20,6 @@ APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
 
 
 def _resolve_runtime_root() -> Path:
-    """Return a writable directory for logs, downloads and templates."""
     local_app_data = os.getenv("LOCALAPPDATA")
     if local_app_data:
         return Path(local_app_data) / APP_NAME
@@ -46,10 +43,7 @@ HOMOLOGATION_TEMPLATE_PATH = DATA_DIR / HOMOLOGATION_TEMPLATE_NAME
 
 PROVIDERS_SOURCE = os.getenv("PROVIDERS_SOURCE", "catalog").lower()
 
-# Canal del navegador para Playwright.
-# None  → Chromium embebido (por defecto, sin VPN)
-# "msedge" → Edge del sistema (hereda proxy/VPN de Windows, recomendado con VPN)
-# "chrome" → Chrome instalado en el sistema
+# None → Chromium embebido | "msedge" → Edge del sistema | "chrome" → Chrome instalado
 BROWSER_CHANNEL: str | None = os.getenv("RPA_BROWSER_CHANNEL") or None
 
 
@@ -62,7 +56,6 @@ def _resolve_onedrive_root() -> Path | None:
 
 
 def _resolve_onedrive_data_clientes(onedrive_root: Path | None) -> Path | None:
-    """Busca la carpeta 'Archivos de * - Data Clientes' dentro del raíz de OneDrive."""
     if onedrive_root is None:
         return None
     try:
@@ -76,32 +69,24 @@ def _resolve_onedrive_data_clientes(onedrive_root: Path | None) -> Path | None:
 
 _ONEDRIVE_ROOT = _resolve_onedrive_root()
 ONEDRIVE_SYNC_DIR = _ONEDRIVE_ROOT / APP_NAME if _ONEDRIVE_ROOT else None
-
-# Raíz de "Data Clientes" en OneDrive (detectada automáticamente).
-# Ejemplo: C:\Users\nicot\OneDrive - genommalabinternacional\Archivos de Cristian Javier Sanchez Yepez - Data Clientes
 ONEDRIVE_DATA_CLIENTES_BASE: Path | None = _resolve_onedrive_data_clientes(_ONEDRIVE_ROOT)
 
-# Carpeta HB en OneDrive (legacy, usado como fallback si no hay OneDrive_carpeta configurado).
 ONEDRIVE_HB_DIR: Path | None = (
     Path(os.getenv("ONEDRIVE_HB_PATH"))
     if os.getenv("ONEDRIVE_HB_PATH")
     else (_ONEDRIVE_ROOT / "HB" if _ONEDRIVE_ROOT else None)
 )
 
-# Ruta base en OneDrive para Megatiendas (EOS Consultores)
 ONEDRIVE_BI_MEGATIENDAS_BASE: Path | None = (
     ONEDRIVE_DATA_CLIENTES_BASE / "TT" / "Nuevo" / "1. B2B" / "Megatiendas"
     if ONEDRIVE_DATA_CLIENTES_BASE else None
 )
 
-# Ruta base en OneDrive para Provecol (Soluciones Prácticas)
 ONEDRIVE_BI_PROVECOL_BASE: Path | None = (
     ONEDRIVE_DATA_CLIENTES_BASE / "TT" / "Nuevo" / "1. B2B" / "Provecol"
     if ONEDRIVE_DATA_CLIENTES_BASE else None
 )
 
-# ── Notificación por email ────────────────────────────────────────────────────
-# Configurar con variables de entorno o directamente aquí.
 NOTIFY_EMAIL: str = os.getenv("RPA_NOTIFY_EMAIL", "")
 SMTP_HOST:    str = os.getenv("RPA_SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT:    int = int(os.getenv("RPA_SMTP_PORT", "587"))
