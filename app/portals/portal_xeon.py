@@ -49,17 +49,17 @@ class PortalXeon(BasePortal):
         zona = self._extract_zona()
 
         try:
-            cookies = self._login_and_get_cookies()
+            cookies, page_htmls = self._login_and_get_cookies()
 
             session = requests.Session()
             session.headers.update({"User-Agent": _UA})
             for c in cookies:
                 session.cookies.set(c["name"], c["value"], domain=c.get("domain", ""))
 
-            backend_url, qs = self._resolve_backend_url(session, "paretto")
+            backend_url, qs = self._resolve_backend_url(session, "paretto", page_htmls.get("paretto"))
             ventas_path = self._download_ventas(session, backend_url, qs)
 
-            backend_inv_url, qs_inv = self._resolve_backend_url(session, "listaprecios")
+            backend_inv_url, qs_inv = self._resolve_backend_url(session, "listaprecios", page_htmls.get("listaprecios"))
             inventario_path = self._download_inventario(session, backend_inv_url, qs_inv)
 
         except Exception as exc:
@@ -98,7 +98,7 @@ class PortalXeon(BasePortal):
             portal_handled_sync=True,
         )
 
-    def _login_and_get_cookies(self) -> list[dict]:
+    def _login_and_get_cookies(self) -> tuple[list[dict], dict[str, str]]:
         login_url = self._base_url()
         self.logger.info("[%s] Login (Playwright) en %s", self.proveedor.display_name, login_url)
 
@@ -128,21 +128,37 @@ class PortalXeon(BasePortal):
 
             page.wait_for_url("**/home.php**", timeout=30000)
 
+            # Navegar directamente a cada vista dentro de la misma sesion del browser
+            # para capturar el HTML con el iframe ya autenticado
+            page_htmls: dict[str, str] = {}
+            for view in ("paretto", "listaprecios"):
+                view_url = self._base_url() + f"home.php?view={view}"
+                self.logger.info("[%s] Capturando HTML de %s", self.proveedor.display_name, view_url)
+                page.goto(view_url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(1500)
+                page_htmls[view] = page.content()
+
             cookies = context.cookies()
             context.close()
             browser.close()
 
         self.logger.info("[%s] Login OK — %d cookies obtenidas.", self.proveedor.display_name, len(cookies))
-        return cookies
+        return cookies, page_htmls
 
     def _resolve_backend_url(
-        self, session: requests.Session, view: str
+        self, session: requests.Session, view: str, cached_html: str | None = None
     ) -> tuple[str, dict[str, str]]:
         frontend = self._base_url() + f"home.php?view={view}"
-        resp = session.get(frontend, timeout=30)
-        resp.raise_for_status()
 
-        match = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', resp.text, re.IGNORECASE)
+        if cached_html:
+            html = cached_html
+            self.logger.debug("[%s] Usando HTML capturado por Playwright para '%s'.", self.proveedor.display_name, view)
+        else:
+            resp = session.get(frontend, timeout=30)
+            resp.raise_for_status()
+            html = resp.text
+
+        match = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE)
         if not match:
             raise RuntimeError(
                 f"No se encontro iframe en home.php?view={view}. "
