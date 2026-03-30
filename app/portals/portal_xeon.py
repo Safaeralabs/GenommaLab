@@ -128,9 +128,9 @@ class PortalXeon(BasePortal):
         paretto_url = self._base_url() + "home.php?view=paretto"
         self.logger.info("[%s] Navegando a paretto: %s", self.proveedor.display_name, paretto_url)
 
-        page.goto(paretto_url, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(2000)
-        self.logger.info("[%s] URL tras carga paretto: %s", self.proveedor.display_name, page.url)
+        page.goto(paretto_url, wait_until="networkidle", timeout=30000)
+        self.logger.info("[%s] URL paretto: %s", self.proveedor.display_name, page.url)
+        page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_loaded.png"))
 
         # El select LstMes se carga dinamicamente via JS en #BOX; esperar a que aparezca
         page.wait_for_selector("#LstMes, select[name='LstMes']", timeout=20000)
