@@ -7,16 +7,14 @@ import shutil
 import socket
 from datetime import date, datetime
 from pathlib import Path
-from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
+from urllib.parse import urlparse
 
-import requests
+from playwright.sync_api import Download, Frame, Page, TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from app.config import settings
 from app.core.models import ExecutionResult, Proveedor
 from app.portals.base_portal import BasePortal
-
-_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 
 class PortalXeon(BasePortal):
@@ -49,19 +47,7 @@ class PortalXeon(BasePortal):
         zona = self._extract_zona()
 
         try:
-            cookies, page_htmls = self._login_and_get_cookies()
-
-            session = requests.Session()
-            session.headers.update({"User-Agent": _UA})
-            for c in cookies:
-                session.cookies.set(c["name"], c["value"], domain=c.get("domain", ""))
-
-            backend_url, qs = self._resolve_backend_url(session, "paretto", page_htmls.get("paretto"))
-            ventas_path = self._download_ventas(session, backend_url, qs)
-
-            backend_inv_url, qs_inv = self._resolve_backend_url(session, "listaprecios", page_htmls.get("listaprecios"))
-            inventario_path = self._download_inventario(session, backend_inv_url, qs_inv)
-
+            ventas_path, inventario_path = self._run_playwright_session()
         except Exception as exc:
             self.logger.exception(
                 "[%s] Error durante descarga Xeon: %s", self.proveedor.display_name, exc
@@ -98,196 +84,152 @@ class PortalXeon(BasePortal):
             portal_handled_sync=True,
         )
 
-    def _login_and_get_cookies(self) -> tuple[list[dict], dict[str, str]]:
-        login_url = self._base_url()
-        self.logger.info("[%s] Login (Playwright) en %s", self.proveedor.display_name, login_url)
-
+    def _run_playwright_session(self) -> tuple[Path, Path]:
         headless = os.getenv("RPA_HEADLESS", "0").strip().lower() in {"1", "true", "yes", "si"}
 
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=headless, channel=settings.BROWSER_CHANNEL)
-            context = browser.new_context()
+            context = browser.new_context(accept_downloads=True)
             page = context.new_page()
+            try:
+                self._login(page)
+                ventas_path = self._download_paretto(page)
+                inventario_path = self._download_listaprecios(page)
+            finally:
+                context.close()
+                browser.close()
 
-            page.goto(login_url, wait_until="domcontentloaded", timeout=60000)
-            page.screenshot(path=str(self.screenshot_dir / "xeon_01_login_page.png"))
+        return ventas_path, inventario_path
 
-            user_loc = page.locator(
-                "input[name='usuario'], input[name='username'], input[name='user'], "
-                "input[placeholder*='suario' i], input[placeholder*='sername' i]"
-            ).first
-            user_loc.fill(self.proveedor.usuario)
+    def _login(self, page: Page) -> None:
+        login_url = self._base_url()
+        self.logger.info("[%s] Login en %s", self.proveedor.display_name, login_url)
 
-            page.locator("input[type='password']").first.fill(self.proveedor.password)
-            page.screenshot(path=str(self.screenshot_dir / "xeon_02_filled.png"))
+        page.goto(login_url, wait_until="domcontentloaded", timeout=60000)
+        page.screenshot(path=str(self.screenshot_dir / "xeon_01_login_page.png"))
 
-            page.get_by_text("Ingresar", exact=False).click()
-            page.wait_for_timeout(3000)
-            page.screenshot(path=str(self.screenshot_dir / "xeon_03_after_click.png"))
-            self.logger.info("[%s] URL tras click: %s", self.proveedor.display_name, page.url)
+        page.locator(
+            "input[name='usuario'], input[name='username'], input[name='user'], "
+            "input[placeholder*='suario' i], input[placeholder*='sername' i]"
+        ).first.fill(self.proveedor.usuario)
 
-            page.wait_for_url("**/home.php**", timeout=30000)
+        page.locator("input[type='password']").first.fill(self.proveedor.password)
+        page.screenshot(path=str(self.screenshot_dir / "xeon_02_filled.png"))
 
-            # Navegar directamente a cada vista dentro de la misma sesion del browser
-            # para capturar el HTML con el iframe ya autenticado
-            page_htmls: dict[str, str] = {}
-            for view in ("paretto", "listaprecios"):
-                view_url = self._base_url() + f"home.php?view={view}"
-                self.logger.info("[%s] Capturando HTML de %s", self.proveedor.display_name, view_url)
-                page.goto(view_url, wait_until="domcontentloaded", timeout=30000)
-                page.wait_for_timeout(1500)
-                page_htmls[view] = page.content()
+        page.get_by_text("Ingresar", exact=False).click()
+        page.wait_for_timeout(3000)
+        page.screenshot(path=str(self.screenshot_dir / "xeon_03_after_click.png"))
+        self.logger.info("[%s] URL tras click: %s", self.proveedor.display_name, page.url)
 
-            cookies = context.cookies()
-            context.close()
-            browser.close()
+        page.wait_for_url("**/home.php**", timeout=30000)
+        self.logger.info("[%s] Login OK.", self.proveedor.display_name)
 
-        self.logger.info("[%s] Login OK — %d cookies obtenidas.", self.proveedor.display_name, len(cookies))
-        return cookies, page_htmls
+    def _download_paretto(self, page: Page) -> Path:
+        paretto_url = self._base_url() + "home.php?view=paretto"
+        self.logger.info("[%s] Navegando a paretto: %s", self.proveedor.display_name, paretto_url)
 
-    def _resolve_backend_url(
-        self, session: requests.Session, view: str, cached_html: str | None = None
-    ) -> tuple[str, dict[str, str]]:
-        frontend = self._base_url() + f"home.php?view={view}"
+        page.goto(paretto_url, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(2000)
 
-        if cached_html:
-            html = cached_html
-            self.logger.debug("[%s] Usando HTML capturado por Playwright para '%s'.", self.proveedor.display_name, view)
-        else:
-            resp = session.get(frontend, timeout=30)
-            resp.raise_for_status()
-            html = resp.text
+        frame = self._get_content_frame(page)
 
-        match = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE)
-        if not match:
-            raise RuntimeError(
-                f"No se encontro iframe en home.php?view={view}. "
-                "El portal puede haber cambiado su estructura."
-            )
+        frame.wait_for_selector("select[name='LstMes'], #LstMes", timeout=15000)
 
-        iframe_src = match.group(1)
-        full_url = urljoin(frontend, iframe_src)
-        parsed = urlparse(full_url)
-        base = urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
-        qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+        self._select_mes(frame)
 
-        self.logger.debug(
-            "[%s] Backend URL para '%s': %s (params: %s)",
-            self.proveedor.display_name, view, base, qs,
+        frame.evaluate(
+            "v => { const el = document.getElementById('TxtFecIni'); if (el) el.value = v; }",
+            self.proveedor.fecha_desde,
         )
-        return base, qs
-
-    def _download_ventas(
-        self,
-        session: requests.Session,
-        backend_url: str,
-        qs: dict[str, str],
-    ) -> Path:
+        frame.evaluate(
+            "v => { const el = document.getElementById('TxtFecFin'); if (el) el.value = v; }",
+            self.proveedor.fecha_hasta,
+        )
         self.logger.info(
-            "[%s] Descargando ventas (Paretto) %s → %s",
+            "[%s] Fechas inyectadas: %s → %s",
             self.proveedor.display_name,
             self.proveedor.fecha_desde,
             self.proveedor.fecha_hasta,
         )
 
-        resp = session.get(backend_url, params=qs, timeout=30)
-        resp.raise_for_status()
-        mes_value = self._find_mes_value(resp.text)
-        self.logger.info("[%s] Mes seleccionado: %s", self.proveedor.display_name, mes_value)
+        frame.locator("input[name='BtoBuscar'], #BtoBuscar, input[value*='uscar' i]").first.click()
+        self.logger.info("[%s] Buscando ventas...", self.proveedor.display_name)
 
-        form = {
-            "LstMes":      mes_value,
-            "TxtFecIni":   self.proveedor.fecha_desde,
-            "TxtFecFin":   self.proveedor.fecha_hasta,
-            "TxtSistema":  qs.get("S", "B"),
-            "TxtSucursal": qs.get("Sucursal", self._extract_zona()),
-            "TxtLstMes":   "",
-            "TxtZona":     qs.get("Zona", "0"),
-            "TxtLinea":    qs.get("Linea", "224,225"),
-            "Mobile":      "0",
-            "BtoBuscar":   "",
-        }
-        resp = session.post(backend_url, params=qs, data=form, timeout=60)
-        resp.raise_for_status()
+        try:
+            frame.locator("a[href*='ParettoExportar']").wait_for(state="visible", timeout=60000)
+        except PlaywrightTimeoutError:
+            page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_timeout.png"))
+            raise RuntimeError("Timeout esperando el link de exportacion de ventas (ParettoExportar).")
 
-        export_url = self._find_export_href(resp.text, backend_url, "ParettoExportar")
-        self.logger.info("[%s] Export URL ventas: %s", self.proveedor.display_name, export_url)
+        self.logger.info("[%s] Exportando ventas...", self.proveedor.display_name)
+        with page.expect_download(timeout=60000) as dl:
+            frame.locator("a[href*='ParettoExportar']").first.click()
 
-        return self._download_file(session, export_url, "ventas")
+        return self._save_download(dl.value, "ventas")
 
-    def _download_inventario(
-        self,
-        session: requests.Session,
-        backend_url: str,
-        qs: dict[str, str],
-    ) -> Path:
-        self.logger.info("[%s] Descargando inventario (Lista de Precios).", self.proveedor.display_name)
+    def _download_listaprecios(self, page: Page) -> Path:
+        lista_url = self._base_url() + "home.php?view=listaprecios"
+        self.logger.info("[%s] Navegando a listaprecios: %s", self.proveedor.display_name, lista_url)
 
-        resp = session.get(backend_url, params=qs, timeout=30)
-        resp.raise_for_status()
+        page.goto(lista_url, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(2000)
 
-        form = {
-            "TxtSucursal": qs.get("Sucursal", self._extract_zona()),
-            "TxtSistema":  qs.get("S", "B"),
-            "TxtLinea":    qs.get("Linea", "224,225"),
-            "TxtZona":     qs.get("Zona", "0"),
-            "Mobile":      "0",
-            "BtoBuscar":   "",
-        }
-        resp = session.post(backend_url, params=qs, data=form, timeout=60)
-        resp.raise_for_status()
+        frame = self._get_content_frame(page)
 
-        export_url = self._find_export_href(resp.text, backend_url, "Exportar")
-        self.logger.info("[%s] Export URL inventario: %s", self.proveedor.display_name, export_url)
+        frame.wait_for_selector("input[name='BtoBuscar'], #BtoBuscar", timeout=15000)
+        frame.locator("input[name='BtoBuscar'], #BtoBuscar, input[value*='uscar' i]").first.click()
+        self.logger.info("[%s] Buscando inventario...", self.proveedor.display_name)
 
-        return self._download_file(session, export_url, "inventario")
+        try:
+            frame.locator("a[href*='Exportar']").wait_for(state="visible", timeout=60000)
+        except PlaywrightTimeoutError:
+            page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_timeout.png"))
+            raise RuntimeError("Timeout esperando el link de exportacion de inventario.")
 
-    def _find_mes_value(self, html: str) -> str:
+        self.logger.info("[%s] Exportando inventario...", self.proveedor.display_name)
+        with page.expect_download(timeout=60000) as dl:
+            frame.locator("a[href*='Exportar']").first.click()
+
+        return self._save_download(dl.value, "inventario")
+
+    def _get_content_frame(self, page: Page) -> Frame:
+        page.locator("iframe").first.wait_for(state="attached", timeout=15000)
+        page.wait_for_timeout(500)
+        content_frames = [f for f in page.frames if f is not page.main_frame]
+        if not content_frames:
+            raise RuntimeError("No se encontro el iframe de contenido en la pagina.")
+        return content_frames[0]
+
+    def _select_mes(self, frame: Frame) -> None:
         d = date.fromisoformat(self.proveedor.fecha_desde)
-        year_str = str(d.year)
-        month_str = f"{d.month:02d}"
-
-        options = re.findall(
-            r'<option[^>]+value=["\']([^"\']*)["\'][^>]*>([^<]+)<', html, re.IGNORECASE
+        selected = frame.evaluate(
+            """([y, m]) => {
+                const sel = document.querySelector('select[name="LstMes"]') || document.getElementById('LstMes');
+                if (!sel) return false;
+                const mStr = String(m).padStart(2, '0');
+                for (const opt of sel.options) {
+                    if (opt.text.includes(String(y)) && opt.text.includes(mStr)) {
+                        sel.value = opt.value;
+                        sel.dispatchEvent(new Event('change'));
+                        return true;
+                    }
+                }
+                return false;
+            }""",
+            [d.year, d.month],
         )
-        for value, text in options:
-            text = text.strip()
-            if year_str in text and month_str in text:
-                return value
-
-        raise RuntimeError(
-            f"Mes {year_str}-{month_str} no encontrado en el dropdown del portal."
-        )
-
-    def _find_export_href(self, html: str, backend_url: str, keyword: str) -> str:
-        hrefs = re.findall(r'href=["\']([^"\']+)["\']', html, re.IGNORECASE)
-        for href in hrefs:
-            if keyword.lower() in href.lower():
-                return urljoin(backend_url, href)
-        for href in hrefs:
-            if any(w in href.lower() for w in ("exportar", "excel", "export")):
-                return urljoin(backend_url, href)
-        raise RuntimeError(
-            f"No se encontro link de exportacion (keyword='{keyword}') en la respuesta del portal."
+        if not selected:
+            raise RuntimeError(
+                f"Mes {d.year}-{d.month:02d} no encontrado en el dropdown del portal."
+            )
+        self.logger.info(
+            "[%s] Mes seleccionado: %s-%02d", self.proveedor.display_name, d.year, d.month
         )
 
-    def _download_file(self, session: requests.Session, url: str, tipo: str) -> Path:
-        resp = session.get(url, stream=True, timeout=120)
-        resp.raise_for_status()
-
-        cd = resp.headers.get("Content-Disposition", "")
-        name_match = re.search(r'filename[^;=\n]*=(["\'"]?)([^"\';\\n]+)\1', cd)
-        if name_match:
-            filename = name_match.group(2).strip()
-        else:
-            ext = ".xlsx"
-            filename = f"xeon_{tipo}_{self._extract_zona()}{ext}"
-
+    def _save_download(self, download: Download, tipo: str) -> Path:
+        filename = download.suggested_filename or f"xeon_{tipo}_{self._extract_zona()}.xlsx"
         dest = self.download_dir / filename
-        with open(dest, "wb") as fh:
-            for chunk in resp.iter_content(chunk_size=8192):
-                fh.write(chunk)
-
+        download.save_as(dest)
         self.logger.info("[%s] Guardado: %s", self.proveedor.display_name, dest)
         return dest
 
@@ -307,9 +249,7 @@ class PortalXeon(BasePortal):
             dest = target_dir / file_path.name
             if not dest.exists():
                 shutil.copy2(file_path, dest)
-                self.logger.info(
-                    "[%s] Copiado a HB: %s", self.proveedor.display_name, dest
-                )
+                self.logger.info("[%s] Copiado a HB: %s", self.proveedor.display_name, dest)
         except OSError as exc:
             self.logger.warning("[%s] Error sync HB: %s", self.proveedor.display_name, exc)
 
