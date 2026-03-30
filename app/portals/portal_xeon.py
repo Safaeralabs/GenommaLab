@@ -125,33 +125,37 @@ class PortalXeon(BasePortal):
         self.logger.info("[%s] Login OK.", self.proveedor.display_name)
 
     def _download_paretto(self, page: Page) -> Path:
-        paretto_url = self._base_url() + "home.php?view=paretto"
-        self.logger.info("[%s] Navegando a paretto: %s", self.proveedor.display_name, paretto_url)
+        self.logger.info("[%s] Buscando menu paretto en home...", self.proveedor.display_name)
 
-        # Ir a home primero para que el JS se inicialice correctamente
-        page.goto(self._base_url() + "home.php", wait_until="networkidle", timeout=30000)
-        page.wait_for_timeout(1000)
+        # Diagnostico: listar links del menu para confirmar texto exacto
+        links_info = page.evaluate(
+            """() => Array.from(document.querySelectorAll('a[href]'))
+                .map(a => (a.getAttribute('href') || '') + ' | ' + a.textContent.trim())
+                .filter(s => s.trim() !== ' | ' && s.length < 200)
+                .slice(0, 30)
+                .join(' ;; ')"""
+        )
+        self.logger.info("[%s] Links home: %s", self.proveedor.display_name, links_info)
 
-        page.goto(paretto_url, wait_until="networkidle", timeout=30000)
-        self.logger.info("[%s] URL paretto: %s", self.proveedor.display_name, page.url)
+        # Hacer click en el link de paretto del menu (como lo haria un usuario)
+        paretto_link = page.locator("a[href*='paretto' i], a[onclick*='paretto' i]").first
+        try:
+            paretto_link.wait_for(state="visible", timeout=10000)
+        except PlaywrightTimeoutError:
+            page.screenshot(path=str(self.screenshot_dir / "xeon_home_menu.png"))
+            raise RuntimeError("No se encontro el link de Paretto en el menu de home.php.")
+
+        paretto_link.click()
+        page.wait_for_timeout(2000)
+        self.logger.info("[%s] URL tras click paretto: %s", self.proveedor.display_name, page.url)
         page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_loaded.png"))
 
-        # Diagnostico: loguear HTML de #BOX y estado de #LstMes
+        # Diagnostico post-click
         box_html = page.evaluate(
             "document.getElementById('BOX')?.innerHTML?.substring(0, 300) || '#BOX no encontrado'"
         )
         self.logger.info("[%s] #BOX HTML: %s", self.proveedor.display_name, box_html)
-        lstmes_state = page.evaluate(
-            """() => {
-                const el = document.getElementById('LstMes') || document.querySelector('select[name="LstMes"]');
-                if (!el) return 'NO EXISTE en DOM';
-                const style = window.getComputedStyle(el);
-                return 'existe | display:' + style.display + ' visibility:' + style.visibility + ' options:' + el.options.length;
-            }"""
-        )
-        self.logger.info("[%s] #LstMes estado: %s", self.proveedor.display_name, lstmes_state)
 
-        # Esperar que exista en DOM (aunque este oculto) antes de wait visible
         page.wait_for_selector("#LstMes, select[name='LstMes']", state="attached", timeout=20000)
 
         self._select_mes(page)
