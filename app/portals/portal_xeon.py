@@ -216,24 +216,34 @@ class PortalXeon(BasePortal):
         return self._save_download(dl.value, "inventario")
 
     def _select_mes(self, frame: Page) -> None:
+        # Las opciones tienen formato "M333 => 2026-03-01 - 2026-03-31", buscar por año-mes
+        try:
+            d = date.fromisoformat(self.proveedor.fecha_desde)
+            year_month = f"{d.year}-{d.month:02d}"
+        except (ValueError, TypeError):
+            year_month = self.proveedor.fecha_desde[:7]
+
         selected = frame.evaluate(
-            """(fechaDesde) => {
+            """(yearMonth) => {
                 const sel = document.getElementById('LstMes') || document.querySelector('select[name="LstMes"]');
                 if (!sel) return false;
+                // Loguear opciones disponibles para depuracion
+                const opts = Array.from(sel.options).map(o => o.text).join(' | ');
+                console.log('LstMes options:', opts);
                 for (const opt of sel.options) {
-                    if (opt.text.includes(fechaDesde)) {
+                    if (opt.text.includes(yearMonth)) {
                         sel.value = opt.value;
                         sel.dispatchEvent(new Event('change'));
                         return opt.text;
                     }
                 }
-                return false;
+                return 'OPTIONS: ' + opts;
             }""",
-            self.proveedor.fecha_desde,
+            year_month,
         )
-        if not selected:
+        if not selected or selected.startswith("OPTIONS:"):
             raise RuntimeError(
-                f"No se encontro opcion en LstMes para fecha {self.proveedor.fecha_desde}."
+                f"No se encontro opcion en LstMes para {year_month}. Disponibles: {selected}"
             )
         self.logger.info("[%s] Mes seleccionado: %s", self.proveedor.display_name, selected)
 
