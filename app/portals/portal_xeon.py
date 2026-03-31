@@ -194,8 +194,16 @@ class PortalXeon(BasePortal):
         self.logger.info("[%s] URL resultados: %s", self.proveedor.display_name, page.url)
         page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_results.png"))
 
+        # Diagnostico: ver que hay en la pagina de resultados
+        body_preview = page.evaluate("document.body?.innerText?.substring(0, 500) || 'sin body'")
+        self.logger.info("[%s] Resultados texto: %s", self.proveedor.display_name, body_preview)
+        all_links = page.evaluate(
+            "() => Array.from(document.querySelectorAll('a[href]')).map(a => a.getAttribute('href') + ' | ' + a.textContent.trim()).slice(0, 20).join(' ;; ')"
+        )
+        self.logger.info("[%s] Links en resultados: %s", self.proveedor.display_name, all_links)
+
         try:
-            page.locator("a[href*='ParettoExportar']").wait_for(state="attached", timeout=30000)
+            page.locator("a[href*='ParettoExportar']").wait_for(state="attached", timeout=10000)
         except PlaywrightTimeoutError:
             page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_timeout.png"))
             raise RuntimeError("Timeout esperando el link de exportacion de ventas (ParettoExportar).")
