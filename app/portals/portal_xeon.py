@@ -177,17 +177,29 @@ class PortalXeon(BasePortal):
         page.wait_for_timeout(1000)
 
         self.logger.info("[%s] Buscando ventas...", self.proveedor.display_name)
-        page.locator("input[name='BtoBuscar'], #BtoBuscar, input[value*='uscar' i]").first.click()
+        # El boton existe en el HTML inyectado pero puede no ser visible (CSS de otro servidor).
+        # Usar JS click directo para no depender de visibilidad.
+        clicked = page.evaluate(
+            "() => { const b = document.getElementById('BtoBuscar'); if(b){ b.click(); return true; } return false; }"
+        )
+        if not clicked:
+            raise RuntimeError("No se encontro #BtoBuscar para hacer click.")
+        self.logger.info("[%s] Click en BtoBuscar OK, esperando resultados...", self.proveedor.display_name)
+
+        # Esperar navegacion o carga de resultados (puede ir a :8080 o quedarse en la misma pagina)
+        page.wait_for_load_state("networkidle", timeout=60000)
+        self.logger.info("[%s] URL tras buscar: %s", self.proveedor.display_name, page.url)
+        page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_results.png"))
 
         try:
-            page.locator("a[href*='ParettoExportar']").wait_for(state="visible", timeout=60000)
+            page.locator("a[href*='ParettoExportar']").wait_for(state="attached", timeout=30000)
         except PlaywrightTimeoutError:
             page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_timeout.png"))
             raise RuntimeError("Timeout esperando el link de exportacion de ventas (ParettoExportar).")
 
         self.logger.info("[%s] Exportando ventas...", self.proveedor.display_name)
         with page.expect_download(timeout=60000) as dl:
-            page.locator("a[href*='ParettoExportar']").first.click()
+            page.evaluate("() => { const a = document.querySelector('a[href*=\"ParettoExportar\"]'); if(a) a.click(); }")
 
         return self._save_download(dl.value, "ventas")
 
