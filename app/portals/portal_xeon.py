@@ -125,11 +125,22 @@ class PortalXeon(BasePortal):
         self.logger.info("[%s] Login OK.", self.proveedor.display_name)
 
     def _download_paretto(self, page: Page) -> Path:
-        # Capturar errores JS y requests de red para diagnostico
-        js_errors: list[str] = []
-        net_requests: list[str] = []
-        page.on("pageerror", lambda err: js_errors.append(str(err)[:300]))
-        page.on("request", lambda req: net_requests.append(f"{req.method} {req.url[:120]}"))
+        # Interceptar la respuesta de Reportes_Paretto.php a nivel de red (bypasea CORS)
+        paretto_html: list[str] = []
+
+        def _capture_paretto_response(resp) -> None:
+            if "Reportes_Paretto" in resp.url or ("8080" in resp.url and "Paretto" in resp.url):
+                try:
+                    body = resp.body().decode("latin-1", errors="replace")
+                    paretto_html.append(body)
+                    self.logger.info(
+                        "[%s] Respuesta Reportes_Paretto capturada: status=%s len=%d preview=%s",
+                        self.proveedor.display_name, resp.status, len(body), body[:200],
+                    )
+                except Exception as exc:
+                    self.logger.warning("[%s] Error capturando respuesta paretto: %s", self.proveedor.display_name, exc)
+
+        page.on("response", _capture_paretto_response)
 
         self.logger.info("[%s] Buscando menu paretto en home...", self.proveedor.display_name)
 
@@ -150,30 +161,15 @@ class PortalXeon(BasePortal):
         self.logger.info("[%s] URL tras click paretto: %s", self.proveedor.display_name, page.url)
         page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_loaded.png"))
 
-        if js_errors:
-            self.logger.warning("[%s] JS errors: %s", self.proveedor.display_name, js_errors)
-        relevant = [r for r in net_requests if not any(x in r for x in [".png", ".jpg", ".css", ".js", ".ico"])]
-        self.logger.info("[%s] Requests XHR/nav: %s", self.proveedor.display_name, relevant[-15:])
-
-        # Si #BOX esta vacio, intentar llamar la funcion JS que carga el contenido
+        # Si #BOX vacio (CORS bloqueo) pero tenemos la respuesta capturada, inyectarla
         box_empty = page.evaluate("!document.getElementById('BOX')?.innerHTML?.trim()")
-        if box_empty:
-            fn_result = page.evaluate(
-                """() => {
-                    const fns = ['cargarVista', 'loadView', 'cargaVista', 'loadContent', 'showView', 'cargaPagina'];
-                    for (const fn of fns) {
-                        if (typeof window[fn] === 'function') { window[fn]('paretto'); return 'llamado: ' + fn; }
-                    }
-                    const scripts = Array.from(document.querySelectorAll('script:not([src])'))
-                        .map(s => s.textContent)
-                        .filter(s => s.includes('BOX') || s.includes('view') || s.includes('parett'))
-                        .map(s => s.substring(0, 250))
-                        .join(' ||| ');
-                    return 'sin fn; scripts: ' + scripts;
-                }"""
-            )
-            self.logger.info("[%s] JS load attempt: %s", self.proveedor.display_name, fn_result)
-            page.wait_for_timeout(3000)
+        if box_empty and paretto_html:
+            self.logger.info("[%s] Inyectando HTML de Reportes_Paretto en #BOX (fix CORS)...", self.proveedor.display_name)
+            page.evaluate("(html) => { document.getElementById('BOX').innerHTML = html; }", paretto_html[0])
+            page.wait_for_timeout(500)
+        elif box_empty:
+            page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_empty.png"))
+            raise RuntimeError("#BOX vacio y no se capturo respuesta de Reportes_Paretto.php.")
 
         page.wait_for_selector("#LstMes, select[name='LstMes']", state="attached", timeout=20000)
 
