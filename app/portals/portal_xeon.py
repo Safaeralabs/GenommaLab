@@ -157,60 +157,37 @@ class PortalXeon(BasePortal):
         paretto_link.click()
         page.wait_for_load_state("networkidle", timeout=30000)
 
-        if not paretto_base_url or not paretto_html:
-            raise RuntimeError("No se capturo respuesta de Reportes_Paretto.php del servidor.")
+        if not paretto_base_url:
+            raise RuntimeError("No se capturo URL de Reportes_Paretto.php del servidor :8080.")
 
-        # Calcular fechas inicio/fin del mes
-        try:
-            d = date.fromisoformat(self.proveedor.fecha_desde)
-        except (ValueError, TypeError):
-            d = date.today()
-        year_month = f"{d.year}-{d.month:02d}"
-        fec_ini = f"{d.year}-{d.month:02d}-01"
-        fec_fin = f"{d.year}-{d.month:02d}-{monthrange(d.year, d.month)[1]:02d}"
+        # Navegar directamente al form en :8080 — sin CORS, CSS y JS cargan del mismo servidor
+        self.logger.info("[%s] Navegando al form en :8080: %s", self.proveedor.display_name, paretto_base_url[0])
+        page.goto(paretto_base_url[0], wait_until="networkidle", timeout=60000)
+        page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_form8080.png"))
 
-        # Extraer valor de LstMes del HTML del form (opciones: <option value="M333">M333 => 2026-03-01 - ...)
-        html = paretto_html[-1]
-        match = re.search(
-            r'<option[^>]*value="([^"]+)"[^>]*>[^<]*' + re.escape(year_month) + r'[^<]*</option>',
-            html, re.IGNORECASE,
-        )
-        if not match:
-            raise RuntimeError(f"No se encontro opcion LstMes para {year_month} en HTML del form.")
-        lst_mes = match.group(1)
-        self.logger.info("[%s] LstMes=%s FecIni=%s FecFin=%s", self.proveedor.display_name, lst_mes, fec_ini, fec_fin)
+        # Seleccionar mes — ahora estamos en :8080, sin CORS, todo funciona normalmente
+        page.wait_for_selector("#LstMes, select[name='LstMes']", state="visible", timeout=20000)
+        self._select_mes(page)
+        page.wait_for_timeout(1500)
 
-        # Construir URL de resultados directamente (evita problemas de CORS/scripts/form-submit)
-        parsed = urlparse(paretto_base_url[0])
-        params = parse_qs(parsed.query, keep_blank_values=True)
-        params["LstMes"] = [lst_mes]
-        params["TxtFecIni"] = [fec_ini]
-        params["TxtFecFin"] = [fec_fin]
-        params["BtoBuscar"] = ["Buscar"]
-        results_url = urlunparse(parsed._replace(query=urlencode(params, doseq=True)))
-
-        self.logger.info("[%s] Navegando a resultados: %s", self.proveedor.display_name, results_url)
-        page.goto(results_url, wait_until="networkidle", timeout=60000)
-        self.logger.info("[%s] URL resultados: %s", self.proveedor.display_name, page.url)
+        # Click en Buscar
+        self.logger.info("[%s] Buscando ventas...", self.proveedor.display_name)
+        page.locator("#BtoBuscar, input[name='BtoBuscar'], button[name='BtoBuscar']").first.click()
+        page.wait_for_load_state("networkidle", timeout=60000)
+        self.logger.info("[%s] URL tras buscar: %s", self.proveedor.display_name, page.url)
         page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_results.png"))
 
-        # Diagnostico: ver que hay en la pagina de resultados
-        body_preview = page.evaluate("document.body?.innerText?.substring(0, 500) || 'sin body'")
-        self.logger.info("[%s] Resultados texto: %s", self.proveedor.display_name, body_preview)
-        all_links = page.evaluate(
-            "() => Array.from(document.querySelectorAll('a[href]')).map(a => a.getAttribute('href') + ' | ' + a.textContent.trim()).slice(0, 20).join(' ;; ')"
-        )
-        self.logger.info("[%s] Links en resultados: %s", self.proveedor.display_name, all_links)
-
         try:
-            page.locator("a[href*='ParettoExportar']").wait_for(state="attached", timeout=10000)
+            page.locator("a[href*='ParettoExportar'], a[href*='Exportar']").wait_for(state="attached", timeout=30000)
         except PlaywrightTimeoutError:
+            body_preview = page.evaluate("document.body?.innerText?.substring(0, 400) || 'sin body'")
+            self.logger.warning("[%s] Sin link exportar. Pagina: %s", self.proveedor.display_name, body_preview)
             page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_timeout.png"))
-            raise RuntimeError("Timeout esperando el link de exportacion de ventas (ParettoExportar).")
+            raise RuntimeError("Timeout esperando el link de exportacion de ventas.")
 
         self.logger.info("[%s] Exportando ventas...", self.proveedor.display_name)
         with page.expect_download(timeout=60000) as dl:
-            page.locator("a[href*='ParettoExportar']").first.click()
+            page.locator("a[href*='ParettoExportar'], a[href*='Exportar']").first.click()
 
         return self._save_download(dl.value, "ventas")
 
