@@ -195,16 +195,27 @@ class PortalXeon(BasePortal):
         lista_url = self._base_url() + "home.php?view=listaprecios"
         self.logger.info("[%s] Navegando a listaprecios: %s", self.proveedor.display_name, lista_url)
 
-        page.goto(lista_url, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(2000)
+        # Mismo patron que paretto: capturar URL cross-origin y navegar directo
+        lista_base_url: list[str] = []
+
+        def _capture_lista(resp) -> None:
+            if "8080" in resp.url and not lista_base_url:
+                lista_base_url.append(resp.url)
+
+        page.on("response", _capture_lista)
+        page.goto(lista_url, wait_until="networkidle", timeout=30000)
         self.logger.info("[%s] URL tras carga listaprecios: %s", self.proveedor.display_name, page.url)
 
-        page.wait_for_selector("input[name='BtoBuscar'], #BtoBuscar", timeout=20000)
+        if lista_base_url:
+            self.logger.info("[%s] Navegando al form listaprecios en :8080: %s", self.proveedor.display_name, lista_base_url[0])
+            page.goto(lista_base_url[0], wait_until="networkidle", timeout=30000)
+
+        page.wait_for_selector("input[name='BtoBuscar'], #BtoBuscar", state="visible", timeout=20000)
         self.logger.info("[%s] Buscando inventario...", self.proveedor.display_name)
         page.locator("input[name='BtoBuscar'], #BtoBuscar, input[value*='uscar' i]").first.click()
 
         try:
-            page.locator("a[href*='Exportar']").wait_for(state="visible", timeout=60000)
+            page.locator("a[href*='Exportar']").wait_for(state="attached", timeout=60000)
         except PlaywrightTimeoutError:
             page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_timeout.png"))
             raise RuntimeError("Timeout esperando el link de exportacion de inventario.")
