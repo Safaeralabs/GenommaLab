@@ -7,7 +7,8 @@ import shutil
 import socket
 from datetime import date, datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from calendar import monthrange
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from playwright.sync_api import Download, Page, TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -125,22 +126,20 @@ class PortalXeon(BasePortal):
         self.logger.info("[%s] Login OK.", self.proveedor.display_name)
 
     def _download_paretto(self, page: Page) -> Path:
-        # Interceptar la respuesta de Reportes_Paretto.php a nivel de red (bypasea CORS)
+        # Capturar URL base y HTML del form desde la respuesta de Reportes_Paretto.php
+        paretto_base_url: list[str] = []
         paretto_html: list[str] = []
 
-        def _capture_paretto_response(resp) -> None:
-            if "Reportes_Paretto" in resp.url or ("8080" in resp.url and "Paretto" in resp.url):
+        def _capture(resp) -> None:
+            if "Reportes_Paretto" in resp.url:
+                if not paretto_base_url:
+                    paretto_base_url.append(resp.url)
                 try:
-                    body = resp.body().decode("latin-1", errors="replace")
-                    paretto_html.append(body)
-                    self.logger.info(
-                        "[%s] Respuesta Reportes_Paretto capturada: status=%s len=%d preview=%s",
-                        self.proveedor.display_name, resp.status, len(body), body[:200],
-                    )
-                except Exception as exc:
-                    self.logger.warning("[%s] Error capturando respuesta paretto: %s", self.proveedor.display_name, exc)
+                    paretto_html.append(resp.body().decode("latin-1", errors="replace"))
+                except Exception:
+                    pass
 
-        page.on("response", _capture_paretto_response)
+        page.on("response", _capture)
 
         self.logger.info("[%s] Buscando menu paretto en home...", self.proveedor.display_name)
 
@@ -148,7 +147,6 @@ class PortalXeon(BasePortal):
         page.locator("a:text('Reportes')").first.hover()
         page.wait_for_timeout(600)
 
-        # Hacer click en el link de paretto del menu
         paretto_link = page.locator("a[href*='paretto' i]").first
         try:
             paretto_link.wait_for(state="visible", timeout=10000)
@@ -158,37 +156,42 @@ class PortalXeon(BasePortal):
 
         paretto_link.click()
         page.wait_for_load_state("networkidle", timeout=30000)
-        self.logger.info("[%s] URL tras click paretto: %s", self.proveedor.display_name, page.url)
-        page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_loaded.png"))
 
-        # Si #BOX vacio (CORS bloqueo) pero tenemos la respuesta capturada, inyectarla
-        box_empty = page.evaluate("!document.getElementById('BOX')?.innerHTML?.trim()")
-        if box_empty and paretto_html:
-            self.logger.info("[%s] Inyectando HTML de Reportes_Paretto en #BOX (fix CORS)...", self.proveedor.display_name)
-            page.evaluate("(html) => { document.getElementById('BOX').innerHTML = html; }", paretto_html[0])
-            page.wait_for_timeout(500)
-        elif box_empty:
-            page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_empty.png"))
-            raise RuntimeError("#BOX vacio y no se capturo respuesta de Reportes_Paretto.php.")
+        if not paretto_base_url or not paretto_html:
+            raise RuntimeError("No se capturo respuesta de Reportes_Paretto.php del servidor.")
 
-        page.wait_for_selector("#LstMes, select[name='LstMes']", state="attached", timeout=20000)
+        # Calcular fechas inicio/fin del mes
+        try:
+            d = date.fromisoformat(self.proveedor.fecha_desde)
+        except (ValueError, TypeError):
+            d = date.today()
+        year_month = f"{d.year}-{d.month:02d}"
+        fec_ini = f"{d.year}-{d.month:02d}-01"
+        fec_fin = f"{d.year}-{d.month:02d}-{monthrange(d.year, d.month)[1]:02d}"
 
-        self._select_mes(page)
-        page.wait_for_timeout(1000)
-
-        self.logger.info("[%s] Buscando ventas...", self.proveedor.display_name)
-        # El boton existe en el HTML inyectado pero puede no ser visible (CSS de otro servidor).
-        # Usar JS click directo para no depender de visibilidad.
-        clicked = page.evaluate(
-            "() => { const b = document.getElementById('BtoBuscar'); if(b){ b.click(); return true; } return false; }"
+        # Extraer valor de LstMes del HTML del form (opciones: <option value="M333">M333 => 2026-03-01 - ...)
+        html = paretto_html[-1]
+        match = re.search(
+            r'<option[^>]*value="([^"]+)"[^>]*>[^<]*' + re.escape(year_month) + r'[^<]*</option>',
+            html, re.IGNORECASE,
         )
-        if not clicked:
-            raise RuntimeError("No se encontro #BtoBuscar para hacer click.")
-        self.logger.info("[%s] Click en BtoBuscar OK, esperando resultados...", self.proveedor.display_name)
+        if not match:
+            raise RuntimeError(f"No se encontro opcion LstMes para {year_month} en HTML del form.")
+        lst_mes = match.group(1)
+        self.logger.info("[%s] LstMes=%s FecIni=%s FecFin=%s", self.proveedor.display_name, lst_mes, fec_ini, fec_fin)
 
-        # Esperar navegacion o carga de resultados (puede ir a :8080 o quedarse en la misma pagina)
-        page.wait_for_load_state("networkidle", timeout=60000)
-        self.logger.info("[%s] URL tras buscar: %s", self.proveedor.display_name, page.url)
+        # Construir URL de resultados directamente (evita problemas de CORS/scripts/form-submit)
+        parsed = urlparse(paretto_base_url[0])
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        params["LstMes"] = [lst_mes]
+        params["TxtFecIni"] = [fec_ini]
+        params["TxtFecFin"] = [fec_fin]
+        params["BtoBuscar"] = ["Buscar"]
+        results_url = urlunparse(parsed._replace(query=urlencode(params, doseq=True)))
+
+        self.logger.info("[%s] Navegando a resultados: %s", self.proveedor.display_name, results_url)
+        page.goto(results_url, wait_until="networkidle", timeout=60000)
+        self.logger.info("[%s] URL resultados: %s", self.proveedor.display_name, page.url)
         page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_results.png"))
 
         try:
@@ -199,7 +202,7 @@ class PortalXeon(BasePortal):
 
         self.logger.info("[%s] Exportando ventas...", self.proveedor.display_name)
         with page.expect_download(timeout=60000) as dl:
-            page.evaluate("() => { const a = document.querySelector('a[href*=\"ParettoExportar\"]'); if(a) a.click(); }")
+            page.locator("a[href*='ParettoExportar']").first.click()
 
         return self._save_download(dl.value, "ventas")
 
