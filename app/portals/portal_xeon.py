@@ -125,23 +125,19 @@ class PortalXeon(BasePortal):
         self.logger.info("[%s] Login OK.", self.proveedor.display_name)
 
     def _download_paretto(self, page: Page) -> Path:
+        # Capturar errores JS y requests de red para diagnostico
+        js_errors: list[str] = []
+        net_requests: list[str] = []
+        page.on("pageerror", lambda err: js_errors.append(str(err)[:300]))
+        page.on("request", lambda req: net_requests.append(f"{req.method} {req.url[:120]}"))
+
         self.logger.info("[%s] Buscando menu paretto en home...", self.proveedor.display_name)
 
-        # Diagnostico: listar links del menu para confirmar texto exacto
-        links_info = page.evaluate(
-            """() => Array.from(document.querySelectorAll('a[href]'))
-                .map(a => (a.getAttribute('href') || '') + ' | ' + a.textContent.trim())
-                .filter(s => s.trim() !== ' | ' && s.length < 200)
-                .slice(0, 30)
-                .join(' ;; ')"""
-        )
-        self.logger.info("[%s] Links home: %s", self.proveedor.display_name, links_info)
+        # Hover sobre Reportes para desplegar submenu CSS hover
+        page.locator("a:text('Reportes')").first.hover()
+        page.wait_for_timeout(600)
 
-        # Abrir submenu padre "Reportes" para que el link de paretto sea visible
-        page.locator("a:text('Reportes')").first.click()
-        page.wait_for_timeout(500)
-
-        # Hacer click en el link de paretto del menu (como lo haria un usuario)
+        # Hacer click en el link de paretto del menu
         paretto_link = page.locator("a[href*='paretto' i]").first
         try:
             paretto_link.wait_for(state="visible", timeout=10000)
@@ -154,11 +150,30 @@ class PortalXeon(BasePortal):
         self.logger.info("[%s] URL tras click paretto: %s", self.proveedor.display_name, page.url)
         page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_loaded.png"))
 
-        # Diagnostico post-click: body HTML para ver estructura real
-        body_html = page.evaluate(
-            "document.body?.innerHTML?.substring(0, 1500) || 'no body'"
-        )
-        self.logger.info("[%s] Body HTML: %s", self.proveedor.display_name, body_html)
+        if js_errors:
+            self.logger.warning("[%s] JS errors: %s", self.proveedor.display_name, js_errors)
+        relevant = [r for r in net_requests if not any(x in r for x in [".png", ".jpg", ".css", ".js", ".ico"])]
+        self.logger.info("[%s] Requests XHR/nav: %s", self.proveedor.display_name, relevant[-15:])
+
+        # Si #BOX esta vacio, intentar llamar la funcion JS que carga el contenido
+        box_empty = page.evaluate("!document.getElementById('BOX')?.innerHTML?.trim()")
+        if box_empty:
+            fn_result = page.evaluate(
+                """() => {
+                    const fns = ['cargarVista', 'loadView', 'cargaVista', 'loadContent', 'showView', 'cargaPagina'];
+                    for (const fn of fns) {
+                        if (typeof window[fn] === 'function') { window[fn]('paretto'); return 'llamado: ' + fn; }
+                    }
+                    const scripts = Array.from(document.querySelectorAll('script:not([src])'))
+                        .map(s => s.textContent)
+                        .filter(s => s.includes('BOX') || s.includes('view') || s.includes('parett'))
+                        .map(s => s.substring(0, 250))
+                        .join(' ||| ');
+                    return 'sin fn; scripts: ' + scripts;
+                }"""
+            )
+            self.logger.info("[%s] JS load attempt: %s", self.proveedor.display_name, fn_result)
+            page.wait_for_timeout(3000)
 
         page.wait_for_selector("#LstMes, select[name='LstMes']", state="attached", timeout=20000)
 
