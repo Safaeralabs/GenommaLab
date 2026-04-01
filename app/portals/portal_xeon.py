@@ -273,26 +273,55 @@ class PortalXeon(BasePortal):
         buscar.wait_for(state="visible", timeout=15000)
         buscar.click()
         page.wait_for_load_state("networkidle", timeout=60000)
+        page.wait_for_timeout(2000)
         page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_results.png"))
 
-        try:
-            # El link Excel tiene href con 'ListaPrecios' e img con alt 'Exportar a Excel'
-            page.locator(
-                "a[href*='ListaPrecios'], a:has(img[alt*='Exportar']), a:has(img[src*='Excel'])"
-            ).wait_for(state="attached", timeout=60000)
-        except PlaywrightTimeoutError:
+        # Buscar el link Excel en la pagina principal y en todos los frames
+        excel_href = self._find_excel_link(page)
+        if not excel_href:
             body_preview = page.evaluate("document.body?.innerText?.substring(0, 400) || 'sin body'")
             self.logger.warning("[%s] Sin boton Excel inventario. Pagina: %s", self.proveedor.display_name, body_preview)
             page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_timeout.png"))
-            raise RuntimeError("Timeout esperando el boton Excel de inventario.")
+            raise RuntimeError("No se encontro el link de exportacion Excel de inventario.")
 
-        self.logger.info("[%s] Exportando inventario...", self.proveedor.display_name)
+        self.logger.info("[%s] Link Excel encontrado: %s", self.proveedor.display_name, excel_href)
         with page.expect_download(timeout=60000) as dl:
-            page.locator(
-                "a[href*='ListaPrecios'], a:has(img[alt*='Exportar']), a:has(img[src*='Excel'])"
-            ).first.click()
+            page.evaluate(f"window.open('{excel_href}', '_self')")
 
         return self._save_download(dl.value, "inventario")
+
+    def _find_excel_link(self, page: Page) -> str | None:
+        """Busca el link de exportacion Excel en la pagina principal y en todos los frames."""
+        EXCEL_JS = """() => {
+            const a = document.querySelector("a[href*='ListaPrecios']") ||
+                      Array.from(document.querySelectorAll('a')).find(
+                          el => el.querySelector('img[alt*="Exportar"]') ||
+                                el.querySelector('img[src*="Excel"]') ||
+                                el.querySelector('img[src*="excel"]')
+                      );
+            return a ? a.href : null;
+        }"""
+
+        # Probar en la pagina principal
+        href = page.evaluate(EXCEL_JS)
+        if href:
+            return href
+
+        # Probar en cada frame/iframe
+        for frame in page.frames:
+            if frame == page.main_frame:
+                continue
+            try:
+                href = frame.evaluate(EXCEL_JS)
+                if href:
+                    self.logger.info(
+                        "[%s] Link Excel hallado en frame: %s", self.proveedor.display_name, frame.url
+                    )
+                    return href
+            except Exception:
+                pass
+
+        return None
 
     def _select_proveedor(self, page: Page) -> None:
         """Selecciona el proveedor en el primer select visible del form frmsearch."""
