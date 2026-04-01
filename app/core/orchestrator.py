@@ -13,7 +13,7 @@ from typing import Callable, Sequence
 from app.config import settings
 from app.core.download_organizer import DownloadOrganizer
 from app.core.homologation_writer import HomologationWriter, HomologationRow
-from app.core.models import ExecutionErrorDetail, ExecutionResult, ExecutionSummary, HomologationSummary, Proveedor
+from app.core.models import ExecutionErrorDetail, ExecutionResult, ExecutionSummary, HomologationSummary, Proveedor, ProviderRunDetail
 from app.portals.base_portal import BasePortal
 from app.core.provider_loader import ProviderLoader
 from app.portals.portal_a import PortalA
@@ -68,6 +68,7 @@ class Orchestrator:
         self.last_error_details: list[ExecutionErrorDetail] = []
         self.last_homologation_path: Path | None = None
         self.execution_dir: Path | None = None
+        self.provider_run_details: list[ProviderRunDetail] = []
 
     def run(
         self,
@@ -86,6 +87,7 @@ class Orchestrator:
         self.last_failed_providers.clear()
         self.last_error_details.clear()
         self.last_homologation_path = None
+        self.provider_run_details.clear()
         self.callbacks.on_status("Leyendo proveedores...")
         provider_source = provider_source or settings.PROVIDERS_SOURCE
         if providers_override is None:
@@ -290,6 +292,13 @@ class Orchestrator:
                     message=str(exc),
                 )
             finally:
+                self.provider_run_details.append(ProviderRunDetail(
+                    display_name=execution_proveedor.display_name,
+                    cadena=execution_proveedor.cadena or execution_proveedor.proveedor,
+                    success=result.success,
+                    message=result.message,
+                    portal_tipo=execution_proveedor.portal_tipo,
+                ))
                 self.callbacks.on_result(result)
                 self.callbacks.on_progress(index, total)
 
@@ -317,6 +326,7 @@ class Orchestrator:
                 start_date,
                 total_providers=total,
                 missing_providers=failed_names,
+                provider_details=self.provider_run_details,
             )
             self.last_homologation_path = hom_summary.path
             self.logger.info(

@@ -77,6 +77,16 @@ class OrganizedFile:
     category: str
 
 
+@dataclass(slots=True)
+class ProviderRunDetail:
+    """Resultado de ejecución de un proveedor, para el Resumen de homologación."""
+    display_name: str
+    cadena: str
+    success: bool
+    message: str
+    portal_tipo: str = ""
+
+
 @dataclass
 class HomologationSummary:
     path: Path

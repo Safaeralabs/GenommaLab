@@ -5,14 +5,15 @@ from __future__ import annotations
 import csv
 import logging
 import unicodedata
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Font, PatternFill
 
 from app.config import settings
-from app.core.models import HomologationSummary, OrganizedFile, Proveedor
+from app.core.models import HomologationSummary, OrganizedFile, Proveedor, ProviderRunDetail
 
 
 HOMOLOGATION_COLUMNS = [
@@ -117,6 +118,7 @@ class HomologationWriter:
         fecha_stock: str,
         total_providers: int = 0,
         missing_providers: list[str] | None = None,
+        provider_details: list[ProviderRunDetail] | None = None,
     ) -> HomologationSummary:
         if missing_providers is None:
             missing_providers = []
@@ -189,45 +191,106 @@ class HomologationWriter:
                 continue
             all_rows_in_sheet.append(row_values)
 
+        # Gather per-cadena info and row counts from data sheet
+        cadena_tipos: dict[str, set[str]] = {}
+        cadena_tipo_count: dict[tuple[str, str], int] = defaultdict(int)
+        for rv in all_rows_in_sheet:
+            cadena_val = rv[_CADENA_COL_IDX - 1]
+            tipo_val = rv[2]
+            if cadena_val is None:
+                continue
+            cadena_key = str(cadena_val)
+            tipo_key = str(tipo_val) if tipo_val else ""
+            cadena_tipos.setdefault(cadena_key, set()).add(tipo_key)
+            cadena_tipo_count[(cadena_key, tipo_key)] += 1
+
+        # Build lookup cadena → ProviderRunDetail from current run
+        detail_by_cadena: dict[str, ProviderRunDetail] = {}
+        if provider_details:
+            for det in provider_details:
+                detail_by_cadena[det.cadena] = det
+
         # Delete existing Resumen sheet if present
         if "Resumen" in workbook.sheetnames:
             del workbook["Resumen"]
 
         resumen = workbook.create_sheet("Resumen")
-        resumen_header = ["Proveedor", "Ventas (SO)", "Inventario (INV)", "Estado"]
+        resumen_header = ["Proveedor", "Cadena", "Ventas (SO)", "Filas SO", "Inventario (INV)", "Filas INV", "Estado", "Detalle"]
         resumen.append(resumen_header)
-        # Bold header
         for cell in resumen[1]:
             cell.font = Font(bold=True)
 
-        # Gather per-cadena info from data sheet rows
-        # Cadena = col index 4 (0-based), Tipo = col index 2 (0-based)
-        cadena_tipos: dict[str, set[str]] = {}
-        for rv in all_rows_in_sheet:
-            cadena_val = rv[_CADENA_COL_IDX - 1]
-            tipo_val = rv[2]  # "Tipo" is column C (index 2, 0-based)
-            if cadena_val is None:
-                continue
-            cadena_key = str(cadena_val)
-            cadena_tipos.setdefault(cadena_key, set()).add(str(tipo_val) if tipo_val else "")
+        # Color fills por estado
+        fill_completo  = PatternFill("solid", fgColor="C6EFCE")
+        fill_parcial   = PatternFill("solid", fgColor="FFEB9C")
+        fill_faltante  = PatternFill("solid", fgColor="FFCC99")
+        fill_error     = PatternFill("solid", fgColor="FFC7CE")
+        fill_sin_datos = PatternFill("solid", fgColor="EDEDED")
 
+        estado_fill = {
+            "Completo":  fill_completo,
+            "Parcial":   fill_parcial,
+            "Faltante":  fill_faltante,
+            "Error":     fill_error,
+            "Sin datos": fill_sin_datos,
+        }
+
+        def _append_resumen(row_data: list, estado: str) -> None:
+            resumen.append(row_data)
+            fill = estado_fill.get(estado)
+            if fill:
+                for cell in resumen[resumen.max_row]:
+                    cell.fill = fill
+
+        # 1. Portales con datos en el fichero
+        cadenas_procesadas: set[str] = set()
         for cadena_key, tipos in sorted(cadena_tipos.items()):
+            cadenas_procesadas.add(cadena_key)
             has_so = "SO" in tipos
             has_inv = "INV" in tipos
-            ventas_val = "✓" if has_so else "—"
-            inv_val = "✓" if has_inv else "—"
+            so_count = cadena_tipo_count.get((cadena_key, "SO"), 0)
+            inv_count = cadena_tipo_count.get((cadena_key, "INV"), 0)
+
+            det = detail_by_cadena.get(cadena_key)
+            display = det.display_name if det else cadena_key
+
             if has_so and has_inv:
                 estado = "Completo"
             elif has_so or has_inv:
                 estado = "Parcial"
             else:
                 estado = "Faltante"
-            resumen.append([cadena_key, ventas_val, inv_val, estado])
 
-        # Add rows for missing providers (ran but produced no data rows)
-        for missing_name in missing_providers:
-            if missing_name not in cadena_tipos:
-                resumen.append([missing_name, "—", "—", "Faltante"])
+            if det and not det.success:
+                detalle = det.message[:300]
+            elif det and det.success:
+                detalle = "OK"
+            else:
+                detalle = "Ejecución previa"
+
+            _append_resumen([
+                display, cadena_key,
+                "✓" if has_so else "—", so_count if has_so else "—",
+                "✓" if has_inv else "—", inv_count if has_inv else "—",
+                estado, detalle,
+            ], estado)
+
+        # 2. Portales del run actual sin datos (fallidos o sin filas extraíbles)
+        if provider_details:
+            for det in provider_details:
+                if det.cadena in cadenas_procesadas:
+                    continue
+                estado = "Sin datos" if det.success else "Error"
+                _append_resumen([
+                    det.display_name, det.cadena,
+                    "—", "—", "—", "—",
+                    estado, det.message[:300],
+                ], estado)
+
+        # Ajustar anchos de columnas del Resumen
+        col_widths = [30, 20, 12, 10, 16, 12, 12, 60]
+        for i, width in enumerate(col_widths, start=1):
+            resumen.column_dimensions[resumen.cell(1, i).column_letter].width = width
 
         settings.POSTPROCESSED_DIR.mkdir(parents=True, exist_ok=True)
         workbook.save(target_path)
