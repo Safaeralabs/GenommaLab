@@ -327,10 +327,10 @@ class PortalXeon(BasePortal):
             self.logger.warning("[%s] No se pudo seleccionar proveedor: %s", self.proveedor.display_name, result)
 
     def _select_todas_lineas(self, page: Page) -> None:
-        """Selecciona la opción 'Ver todas mis lineas' en el formulario."""
-        result = page.evaluate(
+        """Hace click real en la opción/radio 'Ver todas mis lineas'."""
+        # Intentar como opcion de select
+        found_in_select = page.evaluate(
             """() => {
-                // Buscar en todos los selects la opcion que contenga 'linea' o 'todas'
                 const selects = Array.from(document.querySelectorAll('select'));
                 for (const sel of selects) {
                     for (const opt of sel.options) {
@@ -342,22 +342,27 @@ class PortalXeon(BasePortal):
                         }
                     }
                 }
-                // Buscar tambien radio/checkbox con ese texto
-                const inputs = Array.from(document.querySelectorAll('input[type=radio], input[type=checkbox]'));
-                for (const inp of inputs) {
-                    const label = document.querySelector(`label[for='${inp.id}']`);
-                    if (label && label.textContent.toLowerCase().includes('todas')) {
-                        inp.checked = true;
-                        inp.dispatchEvent(new Event('change'));
-                        return 'RADIO:' + label.textContent.trim();
-                    }
-                }
-                return 'NOT_FOUND';
+                return null;
             }"""
         )
-        self.logger.info("[%s] Lineas seleccionadas: %s", self.proveedor.display_name, result)
-        if result == "NOT_FOUND":
-            self.logger.warning("[%s] No se encontro opcion 'Ver todas mis lineas'.", self.proveedor.display_name)
+        if found_in_select:
+            self.logger.info("[%s] Lineas (select): %s", self.proveedor.display_name, found_in_select)
+            return
+
+        # Intentar como radio/checkbox/label con click real de Playwright
+        todas_locator = page.locator(
+            "label:text-matches('todas.*l[ií]neas', 'i'), "
+            "input[type='radio'] + label:text-matches('todas', 'i'), "
+            "a:text-matches('todas.*l[ií]neas', 'i'), "
+            "span:text-matches('todas.*l[ií]neas', 'i')"
+        ).first
+        try:
+            todas_locator.wait_for(state="visible", timeout=8000)
+            todas_locator.click()
+            page.wait_for_timeout(500)
+            self.logger.info("[%s] Click en 'Ver todas mis lineas' OK.", self.proveedor.display_name)
+        except PlaywrightTimeoutError:
+            self.logger.warning("[%s] No se encontro 'Ver todas mis lineas', continuando sin seleccionar.", self.proveedor.display_name)
 
     def _select_mes(self, frame: Page) -> None:
         # Las opciones tienen formato "M333 => 2026-03-01 - 2026-03-31", buscar por año-mes
