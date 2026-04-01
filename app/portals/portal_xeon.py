@@ -258,23 +258,20 @@ class PortalXeon(BasePortal):
 
         page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_form.png"))
 
-        # Seleccionar proveedor en el dropdown
-        page.wait_for_selector(
-            "select[name='LstProveedor'], select[name='proveedor'], select[name='Proveedor'], "
-            "select[id*='proveedor' i], select[id*='Proveedor' i]",
-            state="visible", timeout=20000,
-        )
+        # Seleccionar proveedor en el select del form
         self._select_proveedor(page)
 
-        # Seleccionar "Ver todas mis lineas"
+        # Activar "Ver todas mis lineas": poner viewall=1
         self._select_todas_lineas(page)
 
         page.wait_for_timeout(500)
         page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_filled.png"))
 
-        # Click Buscar
+        # Click Buscar — el boton es <button class="azul" onclick="Search();">
         self.logger.info("[%s] Buscando inventario...", self.proveedor.display_name)
-        page.locator("#BtoBuscar, input[name='BtoBuscar'], input[value*='uscar' i]").first.click()
+        buscar = page.locator("button.azul, button[onclick*='Search'], button:text('BUSCAR'), button:text('Buscar')").first
+        buscar.wait_for(state="visible", timeout=15000)
+        buscar.click()
         page.wait_for_load_state("networkidle", timeout=60000)
         page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_results.png"))
 
@@ -293,76 +290,72 @@ class PortalXeon(BasePortal):
         return self._save_download(dl.value, "inventario")
 
     def _select_proveedor(self, page: Page) -> None:
-        """Selecciona el proveedor en el dropdown de lista de precios."""
+        """Selecciona el proveedor en el primer select visible del form frmsearch."""
         result = page.evaluate(
             """(nombre) => {
-                const sel = document.querySelector(
-                    "select[name='LstProveedor'], select[name='proveedor'], select[name='Proveedor'], "
-                    + "select[id*='proveedor' i]"
-                );
-                if (!sel) return 'NO_SELECT';
-                const opts = Array.from(sel.options).map(o => o.text).join(' | ');
-                console.log('Proveedor options:', opts);
-                // Buscar coincidencia exacta primero, luego parcial
-                for (const opt of sel.options) {
-                    if (opt.text.trim().toLowerCase() === nombre.toLowerCase()) {
-                        sel.value = opt.value;
-                        sel.dispatchEvent(new Event('change'));
-                        return 'EXACT:' + opt.text;
+                // Buscar dentro del form frmsearch, o en toda la pagina
+                const root = document.querySelector('form[name="frmsearch"]') || document;
+                const selects = Array.from(root.querySelectorAll('select'));
+                if (!selects.length) return 'NO_SELECTS';
+                // Loguear todos para diagnostico
+                const info = selects.map(s => (s.name || s.id || '?') + ':' + Array.from(s.options).map(o => o.text).join(',')).join(' || ');
+                console.log('Selects:', info);
+                // Buscar en cada select la opcion que coincida con el proveedor
+                for (const sel of selects) {
+                    for (const opt of sel.options) {
+                        if (opt.text.trim().toLowerCase() === nombre.toLowerCase()) {
+                            sel.value = opt.value;
+                            sel.dispatchEvent(new Event('change'));
+                            return 'EXACT[' + (sel.name||sel.id) + ']:' + opt.text;
+                        }
                     }
                 }
-                for (const opt of sel.options) {
-                    if (opt.text.toLowerCase().includes(nombre.toLowerCase())) {
-                        sel.value = opt.value;
-                        sel.dispatchEvent(new Event('change'));
-                        return 'PARTIAL:' + opt.text;
+                for (const sel of selects) {
+                    for (const opt of sel.options) {
+                        if (opt.text.toLowerCase().includes(nombre.toLowerCase())) {
+                            sel.value = opt.value;
+                            sel.dispatchEvent(new Event('change'));
+                            return 'PARTIAL[' + (sel.name||sel.id) + ']:' + opt.text;
+                        }
                     }
                 }
-                return 'NOT_FOUND:' + opts;
+                return 'NOT_FOUND || ' + info;
             }""",
             self.proveedor.proveedor,
         )
         self.logger.info("[%s] Proveedor seleccionado: %s", self.proveedor.display_name, result)
-        if result.startswith("NOT_FOUND") or result == "NO_SELECT":
-            self.logger.warning("[%s] No se pudo seleccionar proveedor: %s", self.proveedor.display_name, result)
 
     def _select_todas_lineas(self, page: Page) -> None:
-        """Hace click real en la opción/radio 'Ver todas mis lineas'."""
-        # Intentar como opcion de select
-        found_in_select = page.evaluate(
+        """Activa 'Ver todas mis lineas' poniendo el input hidden viewall=1."""
+        result = page.evaluate(
             """() => {
-                const selects = Array.from(document.querySelectorAll('select'));
-                for (const sel of selects) {
-                    for (const opt of sel.options) {
-                        const txt = opt.text.toLowerCase();
-                        if (txt.includes('todas') && txt.includes('linea')) {
-                            sel.value = opt.value;
-                            sel.dispatchEvent(new Event('change'));
-                            return 'OK:' + opt.text;
-                        }
+                // El form tiene <input type="hidden" name="viewall" id="viewall" value="0">
+                const viewall = document.getElementById('viewall') ||
+                                document.querySelector('input[name="viewall"]');
+                if (viewall) {
+                    viewall.value = '1';
+                    return 'viewall=1';
+                }
+                // Fallback: buscar radio/checkbox/label con texto 'todas'
+                const labels = Array.from(document.querySelectorAll('label, span, a'));
+                for (const el of labels) {
+                    const txt = el.textContent.toLowerCase();
+                    if (txt.includes('todas') && txt.includes('l')) {
+                        return 'LABEL_FOUND:' + el.textContent.trim();
                     }
                 }
-                return null;
+                return 'NOT_FOUND';
             }"""
         )
-        if found_in_select:
-            self.logger.info("[%s] Lineas (select): %s", self.proveedor.display_name, found_in_select)
-            return
-
-        # Intentar como radio/checkbox/label con click real de Playwright
-        todas_locator = page.locator(
-            "label:text-matches('todas.*l[ií]neas', 'i'), "
-            "input[type='radio'] + label:text-matches('todas', 'i'), "
-            "a:text-matches('todas.*l[ií]neas', 'i'), "
-            "span:text-matches('todas.*l[ií]neas', 'i')"
-        ).first
-        try:
-            todas_locator.wait_for(state="visible", timeout=8000)
-            todas_locator.click()
-            page.wait_for_timeout(500)
-            self.logger.info("[%s] Click en 'Ver todas mis lineas' OK.", self.proveedor.display_name)
-        except PlaywrightTimeoutError:
-            self.logger.warning("[%s] No se encontro 'Ver todas mis lineas', continuando sin seleccionar.", self.proveedor.display_name)
+        self.logger.info("[%s] Todas las lineas: %s", self.proveedor.display_name, result)
+        # Si encontramos el label pero no el hidden, intentar click real
+        if result.startswith("LABEL_FOUND"):
+            label_text = result.split(":", 1)[1]
+            try:
+                page.locator(f"label:text('{label_text}'), span:text('{label_text}')").first.click()
+                page.wait_for_timeout(300)
+            except Exception:
+                pass
 
     def _select_mes(self, frame: Page) -> None:
         # Las opciones tienen formato "M333 => 2026-03-01 - 2026-03-31", buscar por año-mes
