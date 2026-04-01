@@ -276,16 +276,21 @@ class PortalXeon(BasePortal):
         page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_results.png"))
 
         try:
-            page.locator("a[href*='Exportar']").wait_for(state="attached", timeout=60000)
+            # El link Excel tiene href con 'ListaPrecios' e img con alt 'Exportar a Excel'
+            page.locator(
+                "a[href*='ListaPrecios'], a:has(img[alt*='Exportar']), a:has(img[src*='Excel'])"
+            ).wait_for(state="attached", timeout=60000)
         except PlaywrightTimeoutError:
             body_preview = page.evaluate("document.body?.innerText?.substring(0, 400) || 'sin body'")
-            self.logger.warning("[%s] Sin link exportar inventario. Pagina: %s", self.proveedor.display_name, body_preview)
+            self.logger.warning("[%s] Sin boton Excel inventario. Pagina: %s", self.proveedor.display_name, body_preview)
             page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_timeout.png"))
-            raise RuntimeError("Timeout esperando el link de exportacion de inventario.")
+            raise RuntimeError("Timeout esperando el boton Excel de inventario.")
 
         self.logger.info("[%s] Exportando inventario...", self.proveedor.display_name)
         with page.expect_download(timeout=60000) as dl:
-            page.locator("a[href*='Exportar']").first.click()
+            page.locator(
+                "a[href*='ListaPrecios'], a:has(img[alt*='Exportar']), a:has(img[src*='Excel'])"
+            ).first.click()
 
         return self._save_download(dl.value, "inventario")
 
