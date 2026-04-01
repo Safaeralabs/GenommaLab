@@ -77,6 +77,12 @@ class HomologationWriter:
         "nombreproducto": "Descripcion_prod",
         "ventaunidades": "Unidades",
         "ventaunidad": "Unidades",
+        # Xeon / Pastor Julio (Lista de Precios)
+        "referencia": "Cod_Prod",
+        "descripcion": "Descripcion_prod",
+        "stockreal": "Unidades",
+        "stockfisico": "Unidades",
+        "stock": "Unidades",
     }
 
     def __init__(self, logger: logging.Logger) -> None:
