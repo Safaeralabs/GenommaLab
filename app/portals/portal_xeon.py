@@ -326,36 +326,32 @@ class PortalXeon(BasePortal):
         self.logger.info("[%s] Proveedor seleccionado: %s", self.proveedor.display_name, result)
 
     def _select_todas_lineas(self, page: Page) -> None:
-        """Activa 'Ver todas mis lineas' poniendo el input hidden viewall=1."""
+        """Selecciona 'Ver todas mis lineas' en el select que tenga esa opcion."""
         result = page.evaluate(
             """() => {
-                // El form tiene <input type="hidden" name="viewall" id="viewall" value="0">
-                const viewall = document.getElementById('viewall') ||
-                                document.querySelector('input[name="viewall"]');
-                if (viewall) {
-                    viewall.value = '1';
-                    return 'viewall=1';
-                }
-                // Fallback: buscar radio/checkbox/label con texto 'todas'
-                const labels = Array.from(document.querySelectorAll('label, span, a'));
-                for (const el of labels) {
-                    const txt = el.textContent.toLowerCase();
-                    if (txt.includes('todas') && txt.includes('l')) {
-                        return 'LABEL_FOUND:' + el.textContent.trim();
+                const root = document.querySelector('form[name="frmsearch"]') || document;
+                const selects = Array.from(root.querySelectorAll('select'));
+                // Buscar opcion que contenga 'todas' en cualquier select
+                for (const sel of selects) {
+                    for (const opt of sel.options) {
+                        if (opt.text.toLowerCase().includes('todas')) {
+                            sel.value = opt.value;
+                            sel.dispatchEvent(new Event('change'));
+                            return 'OK[' + (sel.name || sel.id || '?') + ']:' + opt.text;
+                        }
                     }
                 }
-                return 'NOT_FOUND';
+                // Loguear opciones disponibles para diagnostico
+                const allOpts = selects.map(s =>
+                    (s.name||s.id||'?') + '=[' + Array.from(s.options).map(o => o.text).join('|') + ']'
+                ).join(' ; ');
+                // Fallback: poner hidden viewall=1
+                const viewall = document.getElementById('viewall') || document.querySelector('input[name="viewall"]');
+                if (viewall) { viewall.value = '1'; }
+                return 'NOT_FOUND_IN_SELECT. viewall=1. Opts: ' + allOpts;
             }"""
         )
         self.logger.info("[%s] Todas las lineas: %s", self.proveedor.display_name, result)
-        # Si encontramos el label pero no el hidden, intentar click real
-        if result.startswith("LABEL_FOUND"):
-            label_text = result.split(":", 1)[1]
-            try:
-                page.locator(f"label:text('{label_text}'), span:text('{label_text}')").first.click()
-                page.wait_for_timeout(300)
-            except Exception:
-                pass
 
     def _select_mes(self, frame: Page) -> None:
         # Las opciones tienen formato "M333 => 2026-03-01 - 2026-03-31", buscar por año-mes
