@@ -236,6 +236,17 @@ class HomologationWriter:
         all_cadenas = set(cadena_tipos.keys())
         included = len(all_cadenas)
 
+        # En re-runs parciales, total_providers viene del run actual (ej. 1 portal).
+        # Usamos el maximo entre el total declarado y los proveedores reales en el fichero,
+        # para que el UI refleje siempre el estado global acumulado.
+        effective_total = max(total_providers, included)
+
+        # Los missing son los que NO tienen datos en el fichero final (ni SO ni INV).
+        # Combinamos los missing del run actual con los que ya estaban ausentes antes.
+        current_missing_in_file = [
+            name for name in missing_providers if name not in all_cadenas
+        ]
+
         self.logger.info(
             "Homologación acumulativa S%s/%s: %s (filas nuevas: %s, proveedores incluidos: %s/%s)",
             week,
@@ -243,14 +254,14 @@ class HomologationWriter:
             target_path,
             len(rows),
             included,
-            total_providers,
+            effective_total,
         )
 
         return HomologationSummary(
             path=target_path,
             included_providers=included,
-            total_providers=total_providers,
-            missing_providers=missing_providers,
+            total_providers=effective_total,
+            missing_providers=current_missing_in_file,
         )
 
     def _ensure_template(self) -> None:
