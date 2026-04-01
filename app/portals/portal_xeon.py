@@ -64,28 +64,36 @@ class PortalXeon(BasePortal):
         ventas_final = self._rename_file(
             ventas_path, f"Xeon_{zona}_Ventas_{today}{ventas_path.suffix}"
         )
-        inventario_final = self._rename_file(
-            inventario_path, f"Xeon_{zona}_Inventario_{today}{inventario_path.suffix}"
-        )
-
         self._sync_to_hb(ventas_final, week, year)
-        self._sync_to_hb(inventario_final, week, year)
+
+        downloaded_files = [ventas_final]
+        msg_parts = [ventas_final.name]
+
+        if inventario_path is not None:
+            inventario_final = self._rename_file(
+                inventario_path, f"Xeon_{zona}_Inventario_{today}{inventario_path.suffix}"
+            )
+            self._sync_to_hb(inventario_final, week, year)
+            downloaded_files.append(inventario_final)
+            msg_parts.append(inventario_final.name)
+        else:
+            msg_parts.append("Inventario: no descargado")
 
         self.logger.info(
-            "[%s] Completado: %s | %s",
-            self.proveedor.display_name, ventas_final.name, inventario_final.name,
+            "[%s] Completado: %s",
+            self.proveedor.display_name, " | ".join(msg_parts),
         )
         return ExecutionResult(
             proveedor=self.proveedor.display_name,
             portal_tipo=self.proveedor.portal_tipo,
             success=True,
-            message=f"Descargados: {ventas_final.name} | {inventario_final.name}",
+            message="Descargados: " + " | ".join(msg_parts),
             downloaded_file=ventas_final,
-            downloaded_files=[ventas_final, inventario_final],
+            downloaded_files=downloaded_files,
             portal_handled_sync=True,
         )
 
-    def _run_playwright_session(self) -> tuple[Path, Path]:
+    def _run_playwright_session(self) -> tuple[Path, Path | None]:
         headless = os.getenv("RPA_HEADLESS", "0").strip().lower() in {"1", "true", "yes", "si"}
 
         with sync_playwright() as pw:
@@ -95,7 +103,14 @@ class PortalXeon(BasePortal):
             try:
                 self._login(page)
                 ventas_path = self._download_paretto(page)
-                inventario_path = self._download_listaprecios(page)
+                try:
+                    inventario_path: Path | None = self._download_listaprecios(page)
+                except Exception as exc:
+                    self.logger.warning(
+                        "[%s] Inventario no descargado (no fatal): %s",
+                        self.proveedor.display_name, exc,
+                    )
+                    inventario_path = None
             finally:
                 context.close()
                 browser.close()
@@ -192,24 +207,63 @@ class PortalXeon(BasePortal):
         return self._save_download(dl.value, "ventas")
 
     def _download_listaprecios(self, page: Page) -> Path:
-        lista_url = self._base_url() + "home.php?view=listaprecios"
-        self.logger.info("[%s] Navegando a listaprecios: %s", self.proveedor.display_name, lista_url)
+        # Determinar host:port del portal principal para filtrar cross-origin
+        parsed_main = urlparse(self._base_url())
+        main_netloc = parsed_main.netloc  # e.g. "181.225.73.86:42985"
 
-        # Mismo patron que paretto: capturar URL cross-origin y navegar directo
         lista_base_url: list[str] = []
 
         def _capture_lista(resp) -> None:
-            if "8080" in resp.url and not lista_base_url:
+            if lista_base_url:
+                return
+            resp_netloc = urlparse(resp.url).netloc
+            # Capturar cualquier respuesta de un servidor distinto al portal principal
+            if resp_netloc and resp_netloc != main_netloc:
+                self.logger.debug(
+                    "[%s] Cross-origin response: %s", self.proveedor.display_name, resp.url
+                )
                 lista_base_url.append(resp.url)
 
         page.on("response", _capture_lista)
-        page.goto(lista_url, wait_until="networkidle", timeout=30000)
+
+        # Intentar abrir via menu hover (igual que paretto)
+        lista_url = self._base_url() + "home.php"
+        self.logger.info("[%s] Navegando a home para listaprecios: %s", self.proveedor.display_name, lista_url)
+        page.goto(lista_url, wait_until="domcontentloaded", timeout=30000)
+
+        # Hover sobre Reportes / Inventario para desplegar submenu
+        for menu_text in ("Reportes", "Inventario", "Lista"):
+            try:
+                page.locator(f"a:text('{menu_text}')").first.hover()
+                page.wait_for_timeout(500)
+            except Exception:
+                pass
+
+        # Buscar link de lista de precios en el menu
+        lista_link = page.locator(
+            "a[href*='listaprecios' i], a[href*='lista_precio' i], a[href*='listaprecio' i], "
+            "a:text('Lista de Precio'), a:text('Inventario'), a:text('lista')"
+        ).first
+        try:
+            lista_link.wait_for(state="visible", timeout=8000)
+            lista_link.click()
+            page.wait_for_load_state("networkidle", timeout=30000)
+        except PlaywrightTimeoutError:
+            # Fallback: navegar directo a la URL con view=listaprecios
+            self.logger.info(
+                "[%s] Link listaprecios no encontrado en menu, navegando directo.",
+                self.proveedor.display_name,
+            )
+            page.goto(self._base_url() + "home.php?view=listaprecios", wait_until="networkidle", timeout=30000)
+
         self.logger.info("[%s] URL tras carga listaprecios: %s", self.proveedor.display_name, page.url)
+        self.logger.info("[%s] Cross-origin URLs capturadas: %s", self.proveedor.display_name, lista_base_url)
 
         if lista_base_url:
-            self.logger.info("[%s] Navegando al form listaprecios en :8080: %s", self.proveedor.display_name, lista_base_url[0])
+            self.logger.info("[%s] Navegando al form listaprecios: %s", self.proveedor.display_name, lista_base_url[0])
             page.goto(lista_base_url[0], wait_until="networkidle", timeout=30000)
 
+        page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_form.png"))
         page.wait_for_selector("input[name='BtoBuscar'], #BtoBuscar", state="visible", timeout=20000)
         self.logger.info("[%s] Buscando inventario...", self.proveedor.display_name)
         page.locator("input[name='BtoBuscar'], #BtoBuscar, input[value*='uscar' i]").first.click()
