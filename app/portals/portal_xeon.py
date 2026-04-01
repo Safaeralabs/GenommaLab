@@ -207,9 +207,9 @@ class PortalXeon(BasePortal):
         return self._save_download(dl.value, "ventas")
 
     def _download_listaprecios(self, page: Page) -> Path:
-        # Determinar host:port del portal principal para filtrar cross-origin
+        # Capturar URL base del form desde la respuesta cross-origin (mismo patron que paretto)
         parsed_main = urlparse(self._base_url())
-        main_netloc = parsed_main.netloc  # e.g. "181.225.73.86:42985"
+        main_netloc = parsed_main.netloc
 
         lista_base_url: list[str] = []
 
@@ -217,41 +217,33 @@ class PortalXeon(BasePortal):
             if lista_base_url:
                 return
             resp_netloc = urlparse(resp.url).netloc
-            # Capturar cualquier respuesta de un servidor distinto al portal principal
             if resp_netloc and resp_netloc != main_netloc:
                 self.logger.debug(
-                    "[%s] Cross-origin response: %s", self.proveedor.display_name, resp.url
+                    "[%s] Cross-origin listaprecios: %s", self.proveedor.display_name, resp.url
                 )
                 lista_base_url.append(resp.url)
 
         page.on("response", _capture_lista)
 
-        # Intentar abrir via menu hover (igual que paretto)
-        lista_url = self._base_url() + "home.php"
-        self.logger.info("[%s] Navegando a home para listaprecios: %s", self.proveedor.display_name, lista_url)
-        page.goto(lista_url, wait_until="domcontentloaded", timeout=30000)
+        # Volver a home y desplegar submenu Reportes → Inv. y Lista de Precios
+        home_url = self._base_url() + "home.php"
+        self.logger.info("[%s] Navegando a home para listaprecios: %s", self.proveedor.display_name, home_url)
+        page.goto(home_url, wait_until="domcontentloaded", timeout=30000)
 
-        # Hover sobre Reportes / Inventario para desplegar submenu
-        for menu_text in ("Reportes", "Inventario", "Lista"):
-            try:
-                page.locator(f"a:text('{menu_text}')").first.hover()
-                page.wait_for_timeout(500)
-            except Exception:
-                pass
+        page.locator("a:text('Reportes')").first.hover()
+        page.wait_for_timeout(600)
 
-        # Buscar link de lista de precios en el menu
-        lista_link = page.locator(
-            "a[href*='listaprecios' i], a[href*='lista_precio' i], a[href*='listaprecio' i], "
-            "a:text('Lista de Precio'), a:text('Inventario'), a:text('lista')"
+        inv_link = page.locator(
+            "a[href*='listaprecios' i], a[href*='lista_precio' i], "
+            "a:text-is('Inv. y Lista de Precios'), a:text('Inv.'), a:text('Lista de Precios')"
         ).first
         try:
-            lista_link.wait_for(state="visible", timeout=8000)
-            lista_link.click()
+            inv_link.wait_for(state="visible", timeout=10000)
+            inv_link.click()
             page.wait_for_load_state("networkidle", timeout=30000)
         except PlaywrightTimeoutError:
-            # Fallback: navegar directo a la URL con view=listaprecios
             self.logger.info(
-                "[%s] Link listaprecios no encontrado en menu, navegando directo.",
+                "[%s] Link 'Inv. y Lista de Precios' no visible en menu, navegando directo.",
                 self.proveedor.display_name,
             )
             page.goto(self._base_url() + "home.php?view=listaprecios", wait_until="networkidle", timeout=30000)
@@ -259,18 +251,38 @@ class PortalXeon(BasePortal):
         self.logger.info("[%s] URL tras carga listaprecios: %s", self.proveedor.display_name, page.url)
         self.logger.info("[%s] Cross-origin URLs capturadas: %s", self.proveedor.display_name, lista_base_url)
 
+        # Si el form está en :8080, navegar directamente (sin CORS)
         if lista_base_url:
-            self.logger.info("[%s] Navegando al form listaprecios: %s", self.proveedor.display_name, lista_base_url[0])
+            self.logger.info("[%s] Navegando al form en :8080: %s", self.proveedor.display_name, lista_base_url[0])
             page.goto(lista_base_url[0], wait_until="networkidle", timeout=30000)
 
         page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_form.png"))
-        page.wait_for_selector("input[name='BtoBuscar'], #BtoBuscar", state="visible", timeout=20000)
+
+        # Seleccionar proveedor en el dropdown
+        page.wait_for_selector(
+            "select[name='LstProveedor'], select[name='proveedor'], select[name='Proveedor'], "
+            "select[id*='proveedor' i], select[id*='Proveedor' i]",
+            state="visible", timeout=20000,
+        )
+        self._select_proveedor(page)
+
+        # Seleccionar "Ver todas mis lineas"
+        self._select_todas_lineas(page)
+
+        page.wait_for_timeout(500)
+        page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_filled.png"))
+
+        # Click Buscar
         self.logger.info("[%s] Buscando inventario...", self.proveedor.display_name)
-        page.locator("input[name='BtoBuscar'], #BtoBuscar, input[value*='uscar' i]").first.click()
+        page.locator("#BtoBuscar, input[name='BtoBuscar'], input[value*='uscar' i]").first.click()
+        page.wait_for_load_state("networkidle", timeout=60000)
+        page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_results.png"))
 
         try:
             page.locator("a[href*='Exportar']").wait_for(state="attached", timeout=60000)
         except PlaywrightTimeoutError:
+            body_preview = page.evaluate("document.body?.innerText?.substring(0, 400) || 'sin body'")
+            self.logger.warning("[%s] Sin link exportar inventario. Pagina: %s", self.proveedor.display_name, body_preview)
             page.screenshot(path=str(self.screenshot_dir / "xeon_listaprecios_timeout.png"))
             raise RuntimeError("Timeout esperando el link de exportacion de inventario.")
 
@@ -279,6 +291,73 @@ class PortalXeon(BasePortal):
             page.locator("a[href*='Exportar']").first.click()
 
         return self._save_download(dl.value, "inventario")
+
+    def _select_proveedor(self, page: Page) -> None:
+        """Selecciona el proveedor en el dropdown de lista de precios."""
+        result = page.evaluate(
+            """(nombre) => {
+                const sel = document.querySelector(
+                    "select[name='LstProveedor'], select[name='proveedor'], select[name='Proveedor'], "
+                    + "select[id*='proveedor' i]"
+                );
+                if (!sel) return 'NO_SELECT';
+                const opts = Array.from(sel.options).map(o => o.text).join(' | ');
+                console.log('Proveedor options:', opts);
+                // Buscar coincidencia exacta primero, luego parcial
+                for (const opt of sel.options) {
+                    if (opt.text.trim().toLowerCase() === nombre.toLowerCase()) {
+                        sel.value = opt.value;
+                        sel.dispatchEvent(new Event('change'));
+                        return 'EXACT:' + opt.text;
+                    }
+                }
+                for (const opt of sel.options) {
+                    if (opt.text.toLowerCase().includes(nombre.toLowerCase())) {
+                        sel.value = opt.value;
+                        sel.dispatchEvent(new Event('change'));
+                        return 'PARTIAL:' + opt.text;
+                    }
+                }
+                return 'NOT_FOUND:' + opts;
+            }""",
+            self.proveedor.proveedor,
+        )
+        self.logger.info("[%s] Proveedor seleccionado: %s", self.proveedor.display_name, result)
+        if result.startswith("NOT_FOUND") or result == "NO_SELECT":
+            self.logger.warning("[%s] No se pudo seleccionar proveedor: %s", self.proveedor.display_name, result)
+
+    def _select_todas_lineas(self, page: Page) -> None:
+        """Selecciona la opción 'Ver todas mis lineas' en el formulario."""
+        result = page.evaluate(
+            """() => {
+                // Buscar en todos los selects la opcion que contenga 'linea' o 'todas'
+                const selects = Array.from(document.querySelectorAll('select'));
+                for (const sel of selects) {
+                    for (const opt of sel.options) {
+                        const txt = opt.text.toLowerCase();
+                        if (txt.includes('todas') && txt.includes('linea')) {
+                            sel.value = opt.value;
+                            sel.dispatchEvent(new Event('change'));
+                            return 'OK:' + opt.text;
+                        }
+                    }
+                }
+                // Buscar tambien radio/checkbox con ese texto
+                const inputs = Array.from(document.querySelectorAll('input[type=radio], input[type=checkbox]'));
+                for (const inp of inputs) {
+                    const label = document.querySelector(`label[for='${inp.id}']`);
+                    if (label && label.textContent.toLowerCase().includes('todas')) {
+                        inp.checked = true;
+                        inp.dispatchEvent(new Event('change'));
+                        return 'RADIO:' + label.textContent.trim();
+                    }
+                }
+                return 'NOT_FOUND';
+            }"""
+        )
+        self.logger.info("[%s] Lineas seleccionadas: %s", self.proveedor.display_name, result)
+        if result == "NOT_FOUND":
+            self.logger.warning("[%s] No se encontro opcion 'Ver todas mis lineas'.", self.proveedor.display_name)
 
     def _select_mes(self, frame: Page) -> None:
         # Las opciones tienen formato "M333 => 2026-03-01 - 2026-03-31", buscar por año-mes
