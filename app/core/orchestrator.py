@@ -349,6 +349,12 @@ class Orchestrator:
             failed_providers=[p.display_name for p in self.last_failed_providers],
             homologation_rows=len(self.homologation_rows),
             logger=self.logger,
+            execution_dir=str(self.execution_dir) if self.execution_dir else None,
+            homologation_path=str(self.last_homologation_path) if self.last_homologation_path else None,
+            error_details=[
+                {"proveedor": e.proveedor, "message": e.message}
+                for e in self.last_error_details
+            ],
         )
         send_completion_email(
             year=year,

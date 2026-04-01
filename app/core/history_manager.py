@@ -23,6 +23,9 @@ def save_execution(
     failed_providers: list[str],
     homologation_rows: int,
     logger: logging.Logger | None = None,
+    execution_dir: str | None = None,
+    homologation_path: str | None = None,
+    error_details: list[dict] | None = None,
 ) -> None:
     """Append an execution record to the history file."""
     entry = {
@@ -35,6 +38,9 @@ def save_execution(
         "duration_s": round(duration_seconds, 1),
         "failed_providers": failed_providers,
         "homologation_rows": homologation_rows,
+        "execution_dir": execution_dir,
+        "homologation_path": homologation_path,
+        "error_details": error_details or [],
     }
     try:
         history = _load_raw()

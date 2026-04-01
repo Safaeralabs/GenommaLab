@@ -710,10 +710,12 @@ class MainWindow:
         history_frame.rowconfigure(0, weight=1)
         history_frame.columnconfigure(0, weight=1)
 
+        self._history_data: list[dict] = []
+
         hist_columns = ("fecha", "semana", "ok", "fallidos", "duracion", "filas_homol")
         self.history_tree = ttk.Treeview(
             history_frame, columns=hist_columns, show="headings",
-            height=4, selectmode="none",
+            height=4, selectmode="browse",
         )
         self.history_tree.heading("fecha",       text="Fecha")
         self.history_tree.heading("semana",      text="Semana")
@@ -732,6 +734,7 @@ class MainWindow:
         hist_scroll = ttk.Scrollbar(history_frame, orient="vertical", command=self.history_tree.yview)
         hist_scroll.grid(row=0, column=1, sticky="ns")
         self.history_tree.configure(yscrollcommand=hist_scroll.set)
+        self.history_tree.bind("<<TreeviewSelect>>", self._on_history_select)
 
         hist_actions = tk.Frame(history_frame, bg=CLR_SURFACE)
         hist_actions.grid(row=1, column=0, columnspan=2, sticky="ew", padx=4, pady=(4, 6))
@@ -748,6 +751,7 @@ class MainWindow:
         """Load history entries and populate the history treeview."""
         for item in self.history_tree.get_children():
             self.history_tree.delete(item)
+        self._history_data.clear()
         try:
             entries = load_history()
         except Exception:
@@ -770,6 +774,118 @@ class MainWindow:
                 "", tk.END,
                 values=(ts, semana, ok, failed, duracion, homol_rows),
             )
+            self._history_data.append(entry)
+
+    def _on_history_select(self, event=None) -> None:
+        sel = self.history_tree.selection()
+        if not sel:
+            return
+        children = list(self.history_tree.get_children())
+        try:
+            idx = children.index(sel[0])
+        except ValueError:
+            return
+        if idx >= len(self._history_data):
+            return
+        self._show_history_detail(self._history_data[idx])
+
+    def _show_history_detail(self, entry: dict) -> None:
+        import os, subprocess
+        from pathlib import Path
+
+        top = tk.Toplevel(self)
+        top.title(f"Detalle ejecución — {entry.get('timestamp', '')}")
+        top.geometry("720x540")
+        top.resizable(True, True)
+        top.configure(bg=CLR_BG)
+
+        # ── Cabecera ──────────────────────────────────────────────────────────
+        hdr = tk.Frame(top, bg=CLR_ACCENT, padx=14, pady=10)
+        hdr.pack(fill=tk.X)
+        year = entry.get("year", ""); week = entry.get("week", "")
+        semana = f"S{week:02d}/{year}" if isinstance(week, int) and isinstance(year, int) else f"S{week}/{year}"
+        duration_s = entry.get("duration_s", 0)
+        mins, secs = divmod(int(duration_s), 60) if isinstance(duration_s, (int, float)) else (0, 0)
+        info_txt = (
+            f"{entry.get('timestamp','')}   |   {semana}   |   "
+            f"✓ {entry.get('success',0)}  ✗ {entry.get('failed',0)} / {entry.get('total',0)}   |   "
+            f"{mins}m {secs:02d}s   |   {entry.get('homologation_rows',0)} filas homol."
+        )
+        tk.Label(hdr, text=info_txt, bg=CLR_ACCENT, fg="white", font=FONT_BODY).pack(anchor="w")
+
+        body = tk.Frame(top, bg=CLR_BG, padx=10, pady=8)
+        body.pack(fill=tk.BOTH, expand=True)
+        body.columnconfigure(0, weight=1)
+
+        # ── Clientes con errores ──────────────────────────────────────────────
+        tk.Label(body, text="Clientes con errores", font=FONT_HEADING, bg=CLR_BG, fg=CLR_ERROR).grid(
+            row=0, column=0, sticky="w", pady=(0, 2))
+        err_frame = tk.Frame(body, bg=CLR_SURFACE, bd=1, relief="solid")
+        err_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        err_frame.columnconfigure(0, weight=1)
+
+        error_details = entry.get("error_details", [])
+        if not error_details:
+            tk.Label(err_frame, text="  Sin errores en esta ejecución.", font=FONT_BODY,
+                     bg=CLR_SURFACE, fg=CLR_MUTED, pady=4).pack(anchor="w")
+        else:
+            for det in error_details:
+                prov = det.get("proveedor", "?")
+                msg  = det.get("message", "")
+                row_f = tk.Frame(err_frame, bg=CLR_ERROR_ROW, padx=8, pady=3)
+                row_f.pack(fill=tk.X)
+                tk.Label(row_f, text=prov, font=FONT_HEADING, bg=CLR_ERROR_ROW,
+                         fg=CLR_ERROR, width=28, anchor="w").pack(side=tk.LEFT)
+                tk.Label(row_f, text=msg[:120], font=FONT_SMALL, bg=CLR_ERROR_ROW,
+                         fg=CLR_TEXT, anchor="w", wraplength=420, justify="left").pack(side=tk.LEFT, fill=tk.X)
+
+        # ── Archivos generados ────────────────────────────────────────────────
+        tk.Label(body, text="Archivos generados", font=FONT_HEADING, bg=CLR_BG, fg=CLR_TEXT).grid(
+            row=2, column=0, sticky="w", pady=(0, 2))
+
+        files_outer = tk.Frame(body, bg=CLR_SURFACE, bd=1, relief="solid")
+        files_outer.grid(row=3, column=0, sticky="nsew", pady=(0, 8))
+        files_outer.columnconfigure(0, weight=1)
+        body.rowconfigure(3, weight=1)
+
+        files_scroll = tk.Scrollbar(files_outer, orient="vertical")
+        files_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        files_txt = tk.Text(files_outer, font=FONT_MONO, bg=CLR_SURFACE, fg=CLR_TEXT,
+                            relief="flat", wrap="none", height=8,
+                            yscrollcommand=files_scroll.set, state="normal")
+        files_txt.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        files_scroll.config(command=files_txt.yview)
+
+        exec_dir = entry.get("execution_dir")
+        if exec_dir and Path(exec_dir).exists():
+            found = sorted(Path(exec_dir).rglob("*.*"))
+            if found:
+                for f in found:
+                    files_txt.insert(tk.END, str(f.relative_to(Path(exec_dir))) + "\n")
+            else:
+                files_txt.insert(tk.END, "(carpeta vacía)")
+        else:
+            files_txt.insert(tk.END, "(carpeta de ejecución no disponible)")
+        files_txt.config(state="disabled")
+
+        # ── Botones inferiores ────────────────────────────────────────────────
+        btn_frame = tk.Frame(top, bg=CLR_BG, padx=10, pady=6)
+        btn_frame.pack(fill=tk.X)
+
+        hom_path = entry.get("homologation_path")
+        if hom_path and Path(hom_path).exists():
+            ttk.Button(
+                btn_frame, text="Abrir homologación",
+                command=lambda p=hom_path: os.startfile(p),
+            ).pack(side=tk.LEFT, padx=(0, 6))
+
+        if exec_dir and Path(exec_dir).exists():
+            ttk.Button(
+                btn_frame, text="Abrir carpeta archivos",
+                command=lambda d=exec_dir: os.startfile(d),
+            ).pack(side=tk.LEFT, padx=(0, 6))
+
+        ttk.Button(btn_frame, text="Cerrar", command=top.destroy).pack(side=tk.RIGHT)
 
     # ── Helper: tarjeta ───────────────────────────────────────────────────────
 
