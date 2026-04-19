@@ -348,14 +348,16 @@ class HomologationWriter:
             name for name in missing_providers if name not in all_cadenas
         ]
 
+        so_total = sum(1 for rv in all_rows_in_sheet if rv[2] == "SO")
+        inv_total = sum(1 for rv in all_rows_in_sheet if rv[2] == "INV")
         self.logger.info(
-            "Homologación acumulativa S%s/%s: %s (filas nuevas: %s, proveedores incluidos: %s/%s)",
-            week,
-            year,
+            "Homologacion guardada: %s | "
+            "Filas totales en fichero: %d (SO=%d, INV=%d) | "
+            "Filas nuevas este run: %d | Cadenas: %d/%d",
             target_path,
+            len(all_rows_in_sheet), so_total, inv_total,
             len(rows),
-            included,
-            effective_total,
+            included, effective_total,
         )
 
         return HomologationSummary(
