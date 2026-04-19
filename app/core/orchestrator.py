@@ -317,6 +317,8 @@ class Orchestrator:
                     success=result.success,
                     message=result.message,
                     portal_tipo=execution_proveedor.portal_tipo,
+                    so_rows=result.so_rows,
+                    inv_rows=result.inv_rows,
                 ))
                 self.callbacks.on_result(result)
                 self.callbacks.on_progress(index, total)
@@ -451,9 +453,11 @@ class Orchestrator:
         try:
             rows = self.homologation_writer.collect_rows(proveedor, organized_files)
             self.homologation_rows.extend(rows)
+            so_count = sum(1 for r in rows if r.tipo == "SO")
+            inv_count = sum(1 for r in rows if r.tipo == "INV")
+            result.so_rows = so_count
+            result.inv_rows = inv_count
             if rows:
-                so_count = sum(1 for r in rows if r.tipo == "SO")
-                inv_count = sum(1 for r in rows if r.tipo == "INV")
                 result.message = (
                     f"{result.message} | Homologacion: {len(rows)} filas "
                     f"(SO={so_count}, INV={inv_count})"

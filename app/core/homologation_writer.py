@@ -242,12 +242,6 @@ class HomologationWriter:
             cadena_tipos.setdefault(cadena_key, set()).add(tipo_key)
             cadena_tipo_count[(cadena_key, tipo_key)] += 1
 
-        # Build lookup cadena → ProviderRunDetail from current run
-        detail_by_cadena: dict[str, ProviderRunDetail] = {}
-        if provider_details:
-            for det in provider_details:
-                detail_by_cadena[det.cadena] = det
-
         # Delete existing Resumen sheet if present
         if "Resumen" in workbook.sheetnames:
             del workbook["Resumen"]
@@ -280,50 +274,48 @@ class HomologationWriter:
                 for cell in resumen[resumen.max_row]:
                     cell.fill = fill
 
-        # 1. Portales con datos en el fichero
-        cadenas_procesadas: set[str] = set()
+        # 1. Un proveedor por fila (run actual) — usa so_rows/inv_rows guardados en el detalle
+        run_cadenas: set[str] = set()
+        if provider_details:
+            run_cadenas = {det.cadena for det in provider_details}
+            for det in provider_details:
+                has_so = det.so_rows > 0
+                has_inv = det.inv_rows > 0
+                if not det.success:
+                    estado = "Error"
+                elif has_so and has_inv:
+                    estado = "Completo"
+                elif has_so or has_inv:
+                    estado = "Parcial"
+                else:
+                    estado = "Sin datos"
+                _append_resumen([
+                    det.display_name, det.cadena,
+                    "✓" if has_so else "—", det.so_rows if has_so else "—",
+                    "✓" if has_inv else "—", det.inv_rows if has_inv else "—",
+                    estado, det.message[:300],
+                ], estado)
+
+        # 2. Cadenas del fichero de runs anteriores (no incluidas en el run actual)
         for cadena_key, tipos in sorted(cadena_tipos.items()):
-            cadenas_procesadas.add(cadena_key)
+            if cadena_key in run_cadenas:
+                continue
             has_so = "SO" in tipos
             has_inv = "INV" in tipos
             so_count = cadena_tipo_count.get((cadena_key, "SO"), 0)
             inv_count = cadena_tipo_count.get((cadena_key, "INV"), 0)
-
-            det = detail_by_cadena.get(cadena_key)
-            display = det.display_name if det else cadena_key
-
             if has_so and has_inv:
                 estado = "Completo"
             elif has_so or has_inv:
                 estado = "Parcial"
             else:
                 estado = "Faltante"
-
-            if det and not det.success:
-                detalle = det.message[:300]
-            elif det and det.success:
-                detalle = "OK"
-            else:
-                detalle = "Ejecución previa"
-
             _append_resumen([
-                display, cadena_key,
+                cadena_key, cadena_key,
                 "✓" if has_so else "—", so_count if has_so else "—",
                 "✓" if has_inv else "—", inv_count if has_inv else "—",
-                estado, detalle,
+                estado, "Ejecución previa",
             ], estado)
-
-        # 2. Portales del run actual sin datos (fallidos o sin filas extraíbles)
-        if provider_details:
-            for det in provider_details:
-                if det.cadena in cadenas_procesadas:
-                    continue
-                estado = "Sin datos" if det.success else "Error"
-                _append_resumen([
-                    det.display_name, det.cadena,
-                    "—", "—", "—", "—",
-                    estado, det.message[:300],
-                ], estado)
 
         # Ajustar anchos de columnas del Resumen
         col_widths = [30, 20, 12, 10, 16, 12, 12, 60]

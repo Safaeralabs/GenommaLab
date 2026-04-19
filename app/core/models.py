@@ -52,6 +52,8 @@ class ExecutionResult:
     downloaded_files: list[Path] = field(default_factory=list)
     organized_files: list["OrganizedFile"] = field(default_factory=list)
     portal_handled_sync: bool = False
+    so_rows: int = 0
+    inv_rows: int = 0
 
 
 @dataclass(slots=True)
@@ -85,6 +87,8 @@ class ProviderRunDetail:
     success: bool
     message: str
     portal_tipo: str = ""
+    so_rows: int = 0
+    inv_rows: int = 0
 
 
 @dataclass
