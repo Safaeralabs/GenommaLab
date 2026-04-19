@@ -26,13 +26,27 @@ class DownloadOrganizer:
         execution_dir: Path | None = None,
     ) -> list[OrganizedFile]:
         """Copy downloaded files to the post-processed folder and return their paths."""
+        missing = [path for path in downloaded_files if not path.exists()]
         existing_files = [path for path in downloaded_files if path.exists()]
+
+        if missing:
+            self.logger.warning(
+                "[%s] %d archivo(s) descargados no encontrados en disco: %s",
+                proveedor.display_name, len(missing),
+                [p.name for p in missing],
+            )
         if not existing_files:
             self.logger.warning(
                 "[%s] No hay archivos descargados para postprocesar.",
                 proveedor.display_name,
             )
             return []
+
+        self.logger.info(
+            "[%s] Postprocesando %d archivo(s): %s",
+            proveedor.display_name, len(existing_files),
+            [p.name for p in existing_files],
+        )
 
         sanitized_name = self._sanitize_name(proveedor.carpeta or proveedor.display_name)
 
@@ -47,6 +61,11 @@ class DownloadOrganizer:
 
         for source_path in existing_files:
             category = self._classify_file(source_path)
+            size_kb = source_path.stat().st_size / 1024
+            self.logger.info(
+                "[%s] '%s' -> categoria='%s', tamanio=%.1f KB",
+                proveedor.display_name, source_path.name, category, size_kb,
+            )
             destination_dir = provider_root / category
             destination_dir.mkdir(parents=True, exist_ok=True)
 
@@ -59,10 +78,18 @@ class DownloadOrganizer:
                     "source": str(source_path),
                     "destination": str(destination_path),
                     "category": category,
+                    "size_kb": f"{size_kb:.1f}",
                 }
             )
 
-        manifest_data: dict = {"proveedor": proveedor.display_name, "files": manifest_rows}
+        ventas_count = sum(1 for o in organized_items if o.category == "ventas")
+        inv_count = sum(1 for o in organized_items if o.category == "inventario")
+        manifest_data: dict = {
+            "proveedor": proveedor.display_name,
+            "ventas": ventas_count,
+            "inventario": inv_count,
+            "files": manifest_rows,
+        }
         if execution_dir is None:
             manifest_data["batch_stamp"] = provider_root.name
 
@@ -73,10 +100,10 @@ class DownloadOrganizer:
         )
 
         self.logger.info(
-            "[%s] Postprocesado completado. Archivos organizados: %s | Carpeta: %s",
-            proveedor.display_name,
-            len(organized_items),
-            provider_root,
+            "[%s] Postprocesado completado: %d archivo(s) "
+            "(ventas=%d, inventario=%d) -> %s",
+            proveedor.display_name, len(organized_items),
+            ventas_count, inv_count, provider_root,
         )
         return organized_items
 

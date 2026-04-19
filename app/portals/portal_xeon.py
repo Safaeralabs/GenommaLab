@@ -173,6 +173,13 @@ class PortalXeon(BasePortal):
         page.wait_for_load_state("networkidle", timeout=30000)
 
         if not paretto_base_url:
+            # Loguear todas las respuestas recibidas para diagnóstico
+            self.logger.error(
+                "[%s] No se capturo URL de Reportes_Paretto.php. "
+                "URL actual de la pagina: %s",
+                self.proveedor.display_name, page.url,
+            )
+            page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_sin_url.png"))
             raise RuntimeError("No se capturo URL de Reportes_Paretto.php del servidor :8080.")
 
         # Navegar directamente al form en :8080 — sin CORS, CSS y JS cargan del mismo servidor
@@ -195,8 +202,15 @@ class PortalXeon(BasePortal):
         try:
             page.locator("a[href*='ParettoExportar'], a[href*='Exportar']").wait_for(state="attached", timeout=30000)
         except PlaywrightTimeoutError:
-            body_preview = page.evaluate("document.body?.innerText?.substring(0, 400) || 'sin body'")
-            self.logger.warning("[%s] Sin link exportar. Pagina: %s", self.proveedor.display_name, body_preview)
+            body_preview = page.evaluate("document.body?.innerText?.substring(0, 600) || 'sin body'")
+            all_links = page.evaluate(
+                "() => Array.from(document.querySelectorAll('a[href]')).map(a => a.href).join(' | ')"
+            )
+            self.logger.error(
+                "[%s] Timeout esperando link exportar ventas. URL: %s | "
+                "Texto pagina: %s | Links disponibles: %s",
+                self.proveedor.display_name, page.url, body_preview, all_links,
+            )
             page.screenshot(path=str(self.screenshot_dir / "xeon_paretto_timeout.png"))
             raise RuntimeError("Timeout esperando el link de exportacion de ventas.")
 
@@ -423,7 +437,16 @@ class PortalXeon(BasePortal):
         filename = download.suggested_filename or f"xeon_{tipo}_{self._extract_zona()}.xlsx"
         dest = self.download_dir / filename
         download.save_as(dest)
-        self.logger.info("[%s] Guardado: %s", self.proveedor.display_name, dest)
+        size_kb = dest.stat().st_size / 1024 if dest.exists() else -1
+        self.logger.info(
+            "[%s] Guardado: %s (%.1f KB)",
+            self.proveedor.display_name, dest, size_kb,
+        )
+        if size_kb < 1:
+            self.logger.warning(
+                "[%s] Archivo '%s' muy pequeno (%.1f KB) — posiblemente vacio o error del portal.",
+                self.proveedor.display_name, filename, size_kb,
+            )
         return dest
 
     def _rename_file(self, src: Path, new_name: str) -> Path:

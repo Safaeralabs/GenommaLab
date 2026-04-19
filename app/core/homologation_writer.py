@@ -53,11 +53,14 @@ class HomologationWriter:
         "codigoarticulo": "Cod_Prod",
         "codigoproducto": "Cod_Prod",
         "codprod": "Cod_Prod",
+        "referencia": "Cod_Prod",             # Xeon Paretto CSV (Pastor Julio)
         "descripcionarticulo": "Descripcion_prod",
         "descripcionproducto": "Descripcion_prod",
         "descripcion": "Descripcion_prod",
         "unidades": "Unidades",
         "cantidad": "Unidades",
+        "venta": "Unidades",                  # Xeon Paretto CSV: columna Venta
+        "ventas": "Unidades",                 # Xeon Paretto CSV: columna Ventas
         "ean": "Cod_Prod",
         "nombrepr": "Descripcion_prod",       # NOMBRE_PR normalized
         "nombreproducto": "Descripcion_prod", # NOMBRE_PRODUCTO (EOS)
@@ -95,12 +98,33 @@ class HomologationWriter:
         organized_files: list[OrganizedFile],
     ) -> list[HomologationRow]:
         rows: list[HomologationRow] = []
+        if not organized_files:
+            self.logger.warning("[%s] collect_rows: sin archivos organizados.", proveedor.display_name)
+            return rows
+
         for item in organized_files:
             mapping = (
                 self.SALES_MAPPING if item.category == "ventas" else self.INVENTORY_MAPPING
             )
-            entries = self._extract_entries(item.path, mapping)
             tipo = "SO" if item.category == "ventas" else "INV"
+            file_size_kb = item.path.stat().st_size / 1024 if item.path.exists() else -1
+            self.logger.info(
+                "[%s] Extrayendo %s de '%s' (%.1f KB, ext=%s).",
+                proveedor.display_name, tipo, item.path.name,
+                file_size_kb, item.path.suffix.lower(),
+            )
+            entries = self._extract_entries(item.path, mapping)
+            if not entries:
+                self.logger.warning(
+                    "[%s] %s: 0 filas extraidas de '%s'. "
+                    "Verifica que las columnas del archivo coincidan con el mapping.",
+                    proveedor.display_name, tipo, item.path.name,
+                )
+            else:
+                self.logger.info(
+                    "[%s] %s: %d filas extraidas de '%s'.",
+                    proveedor.display_name, tipo, len(entries), item.path.name,
+                )
             for cod, desc, unidades in entries:
                 rows.append(
                     HomologationRow(
@@ -114,6 +138,13 @@ class HomologationWriter:
                         zonalocal=proveedor.sede_subportal or "",
                     )
                 )
+
+        total_so = sum(1 for r in rows if r.tipo == "SO")
+        total_inv = sum(1 for r in rows if r.tipo == "INV")
+        self.logger.info(
+            "[%s] collect_rows total: %d filas (SO=%d, INV=%d).",
+            proveedor.display_name, len(rows), total_so, total_inv,
+        )
         return rows
 
     def write(
@@ -356,11 +387,18 @@ class HomologationWriter:
         file_path: Path,
         mapping: dict[str, str],
     ) -> list[tuple[str, str, str]]:
-        if file_path.suffix.lower() == ".csv":
+        if not file_path.exists():
+            self.logger.error("Archivo no encontrado: %s", file_path)
+            return []
+        ext = file_path.suffix.lower()
+        if ext == ".csv":
             return self._extract_entries_csv(file_path, mapping)
-        if file_path.suffix.lower() == ".xls":
+        if ext == ".xls":
             return self._extract_entries_xls(file_path, mapping)
-        return self._extract_entries_xlsx(file_path, mapping)
+        if ext == ".xlsx":
+            return self._extract_entries_xlsx(file_path, mapping)
+        self.logger.warning("Extension no soportada para homologacion: '%s' (%s)", ext, file_path.name)
+        return []
 
     def _extract_entries_xlsx(
         self,
@@ -371,6 +409,15 @@ class HomologationWriter:
         sheet = workbook.active
         header_row_index, headers = self._find_header_row(sheet, mapping)
         if header_row_index is None:
+            # Loguear las primeras filas para diagnóstico
+            preview = []
+            for row in sheet.iter_rows(min_row=1, max_row=5, values_only=True):
+                preview.append([str(c) for c in row if c is not None])
+            self.logger.warning(
+                "XLSX '%s': no se encontro fila de cabecera con los campos requeridos. "
+                "Primeras filas: %s",
+                file_path.name, preview,
+            )
             workbook.close()
             return []
 
@@ -382,10 +429,21 @@ class HomologationWriter:
                 lookup[target] = idx
 
         required = {"Cod_Prod", "Descripcion_prod", "Unidades"}
-        if not required.issubset(lookup):
+        missing = required - lookup.keys()
+        if missing:
+            raw_cols = [str(h) for h in headers if h]
+            self.logger.warning(
+                "XLSX '%s': faltan campos requeridos %s. "
+                "Columnas detectadas (raw): %s | Columnas mapeadas: %s",
+                file_path.name, missing, raw_cols, list(lookup.keys()),
+            )
             workbook.close()
             return []
 
+        self.logger.debug(
+            "XLSX '%s': cabecera en fila %d, mapeado: %s",
+            file_path.name, header_row_index, lookup,
+        )
         entries: list[tuple[str, str, str]] = []
         for row in sheet.iter_rows(min_row=header_row_index + 1, values_only=True):
             if not row:
@@ -410,6 +468,8 @@ class HomologationWriter:
         Dots in numeric fields (decimal/thousands separators) are replaced
         with commas to match the expected homologation format.
         """
+        used_encoding = None
+        all_rows: list[list[str]] = []
         for encoding in ("utf-8-sig", "latin-1", "utf-8"):
             try:
                 with open(file_path, newline="", encoding=encoding) as f:
@@ -417,18 +477,25 @@ class HomologationWriter:
                     f.seek(0)
                     try:
                         dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+                        delimiter = getattr(dialect, "delimiter", ",")
                     except csv.Error:
                         dialect = csv.excel  # type: ignore[assignment]
+                        delimiter = ","
                     reader = csv.reader(f, dialect)
                     all_rows = list(reader)
+                used_encoding = encoding
                 break
             except UnicodeDecodeError:
                 continue
-        else:
-            return []
 
         if not all_rows:
+            self.logger.warning("CSV '%s': archivo vacio o no decodificable.", file_path.name)
             return []
+
+        self.logger.debug(
+            "CSV '%s': %d filas totales, encoding=%s, delimitador='%s'.",
+            file_path.name, len(all_rows), used_encoding, delimiter,
+        )
 
         # Find header row (same logic as xlsx: first row matching required targets)
         required = {"Cod_Prod", "Descripcion_prod", "Unidades"}
@@ -449,7 +516,20 @@ class HomologationWriter:
                 break
 
         if header_idx is None:
+            # Loguear las primeras filas reales para saber qué columnas tiene el archivo
+            preview_cols = [all_rows[i] for i in range(min(3, len(all_rows)))]
+            self.logger.warning(
+                "CSV '%s': no se encontro cabecera con los campos requeridos %s. "
+                "Primeras filas del archivo: %s",
+                file_path.name, required, preview_cols,
+            )
             return []
+
+        raw_header = all_rows[header_idx]
+        self.logger.debug(
+            "CSV '%s': cabecera en fila %d -> %s | mapeado: %s",
+            file_path.name, header_idx, raw_header, lookup,
+        )
 
         entries: list[tuple[str, str, str]] = []
         for row in all_rows[header_idx + 1:]:

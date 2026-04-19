@@ -248,6 +248,10 @@ class PortalA(BasePortal):
             ],
         )
 
+        self.logger.info(
+            "[%s] Ingresando credenciales (usuario='%s').",
+            self.proveedor.display_name, self.proveedor.usuario,
+        )
         usuario_input.fill(self.proveedor.usuario)
         password_input.fill(self.proveedor.password)
         ingresar_button.click()
@@ -256,8 +260,15 @@ class PortalA(BasePortal):
         page.wait_for_timeout(2000)
         self._handle_branch_selection(page)
 
-        page.locator("text=Portal Web").first.wait_for(timeout=60000)
-        page.locator("text=Inicio").first.wait_for(timeout=60000)
+        try:
+            page.locator("text=Portal Web").first.wait_for(timeout=60000)
+            page.locator("text=Inicio").first.wait_for(timeout=60000)
+        except PlaywrightTimeoutError:
+            self.logger.error(
+                "[%s] Login: timeout esperando 'Portal Web'/'Inicio'. URL actual: %s",
+                self.proveedor.display_name, page.url,
+            )
+            raise
         self.logger.info("[%s] Login completado.", self.proveedor.display_name)
 
     def _handle_branch_selection(self, page: Page) -> None:
@@ -421,6 +432,26 @@ class PortalA(BasePortal):
 
     def _configure_inventory_search(self, page: Page) -> None:
         self.logger.info("[%s] Configurando campos de inventario.", self.proveedor.display_name)
+
+        # Intentar aplicar fecha de corte en el tab Filtros (si el portal lo soporta).
+        # Algunos portales Abako muestran "Fecha Inicial"/"Fecha Final" también en inventario;
+        # otros solo "Fecha de Corte". Se intenta de forma no-fatal para no romper portales
+        # que no tengan el campo.
+        _, end_date = self._resolve_date_range()
+        try:
+            fecha_corte = page.get_by_label("Fecha de Corte")
+            if fecha_corte.count() and fecha_corte.first.bounding_box():
+                fecha_corte.first.fill(end_date)
+                self.logger.info("[%s] Fecha de corte inventario: %s", self.proveedor.display_name, end_date)
+            else:
+                fecha_ini = page.get_by_label("Fecha Inicial")
+                fecha_fin = page.get_by_label("Fecha Final")
+                if fecha_ini.count() and fecha_ini.first.bounding_box():
+                    fecha_ini.first.fill(end_date)
+                    fecha_fin.first.fill(end_date)
+                    self.logger.info("[%s] Fecha inventario (ini=fin): %s", self.proveedor.display_name, end_date)
+        except Exception as exc:
+            self.logger.debug("[%s] Sin filtro de fecha en inventario: %s", self.proveedor.display_name, exc)
 
         page.locator("li.tab").filter(has_text="Campos").click()
         page.locator("#fields").wait_for(state="visible", timeout=15000)

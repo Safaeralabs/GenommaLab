@@ -131,6 +131,10 @@ class Orchestrator:
 
         start_date, end_date = self._week_to_iso_range(year, week)
         max_workers = int(os.getenv("RPA_MAX_WORKERS", "4"))
+        self.logger.info(
+            "Rango de fechas para S%02d/%d: %s a %s | Workers: %d | Proveedores: %d",
+            week, year, start_date, end_date, max_workers, total,
+        )
 
         execution_providers = [
             replace(p, fecha_desde=start_date, fecha_hasta=end_date)
@@ -206,7 +210,17 @@ class Orchestrator:
                         invalid = []
                         for f in result.downloaded_files:
                             ok, reason = validate_download(f)
-                            if not ok:
+                            size_kb = f.stat().st_size / 1024 if f.exists() else -1
+                            if ok:
+                                self.logger.info(
+                                    "[%s] Archivo valido: '%s' (%.1f KB)",
+                                    proveedor.display_name, f.name, size_kb,
+                                )
+                            else:
+                                self.logger.warning(
+                                    "[%s] Archivo invalido: '%s' (%.1f KB) -> %s",
+                                    proveedor.display_name, f.name, size_kb, reason,
+                                )
                                 invalid.append(f"{f.name}: {reason}")
                         if invalid:
                             result = ExecutionResult(
@@ -247,6 +261,11 @@ class Orchestrator:
             self.callbacks.on_worker_status(execution_proveedor.display_name, "postprocesando...")
             try:
                 if result.success:
+                    self.logger.info(
+                        "[%s] Descarga OK (%d archivo(s)). Iniciando postprocesado.",
+                        execution_proveedor.display_name,
+                        len(result.downloaded_files) if result.downloaded_files else (1 if result.downloaded_file else 0),
+                    )
                     result = self._run_postprocess(execution_proveedor, result, year, week)
                 if result.success:
                     success_count += 1
@@ -433,7 +452,19 @@ class Orchestrator:
             rows = self.homologation_writer.collect_rows(proveedor, organized_files)
             self.homologation_rows.extend(rows)
             if rows:
-                result.message = f"{result.message} | Homologacion filas: {len(rows)}"
+                so_count = sum(1 for r in rows if r.tipo == "SO")
+                inv_count = sum(1 for r in rows if r.tipo == "INV")
+                result.message = (
+                    f"{result.message} | Homologacion: {len(rows)} filas "
+                    f"(SO={so_count}, INV={inv_count})"
+                )
+            else:
+                self.logger.warning(
+                    "[%s] Homologacion: 0 filas extraidas. "
+                    "Archivos organizados: %s",
+                    proveedor.display_name,
+                    [(o.path.name, o.category) for o in organized_files],
+                )
         except Exception as exc:
             self.logger.exception(
                 "[%s] Error en homologacion: %s", proveedor.display_name, exc,
