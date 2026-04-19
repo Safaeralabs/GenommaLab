@@ -451,7 +451,7 @@ class PortalA(BasePortal):
                     fecha_fin.first.fill(end_date)
                     self.logger.info("[%s] Fecha inventario (ini=fin): %s", self.proveedor.display_name, end_date)
         except Exception as exc:
-            self.logger.debug("[%s] Sin filtro de fecha en inventario: %s", self.proveedor.display_name, exc)
+            self.logger.info("[%s] Sin filtro de fecha en inventario (no fatal): %s", self.proveedor.display_name, exc)
 
         page.locator("li.tab").filter(has_text="Campos").click()
         page.locator("#fields").wait_for(state="visible", timeout=15000)

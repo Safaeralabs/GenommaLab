@@ -59,6 +59,7 @@ class HomologationWriter:
         "descripcion": "Descripcion_prod",
         "unidades": "Unidades",
         "cantidad": "Unidades",
+        "cantidadproducto": "Unidades",       # Xeon Paretto CSV/XLSX (Pastor Julio TAT + Mensuli)
         "venta": "Unidades",                  # Xeon Paretto CSV: columna Venta
         "ventas": "Unidades",                 # Xeon Paretto CSV: columna Ventas
         "ean": "Cod_Prod",
