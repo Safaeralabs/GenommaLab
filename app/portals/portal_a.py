@@ -383,10 +383,7 @@ class PortalA(BasePortal):
             raise RuntimeError("No se encontro el enlace visible 'Ventas' en el sidebar.")
 
         if self._is_grupo_trebol():
-            ventas_link.click()
-            ventas_target = page.get_by_text("Ventas Netas BI Equivalencia", exact=True).first
-            ventas_target.wait_for(state="visible", timeout=20000)
-            ventas_target.click()
+            self._open_grupo_trebol_sales_entry(page, ventas_link)
         else:
             ventas_link.hover()
             ventas_target = page.get_by_text("Ventas Netas BI", exact=True).first
@@ -418,6 +415,45 @@ class PortalA(BasePortal):
         page.locator("text=Portal Web").first.wait_for(timeout=30000)
         page.locator("text=Saldos").first.wait_for(timeout=30000)
         page.locator("text=Filtrar").first.wait_for(timeout=30000)
+
+    def _open_grupo_trebol_sales_entry(self, page: Page, ventas_link: Locator) -> None:
+        self.logger.info(
+            "[%s] Abriendo acceso especial de ventas para Grupo Trebol.",
+            self.proveedor.display_name,
+        )
+        ventas_link.click(force=True)
+
+        # El portal renderiza una tarjeta en el panel central, no un submenu hover.
+        try:
+            page.get_by_text("Facturación", exact=True).first.wait_for(
+                state="visible",
+                timeout=15000,
+            )
+        except PlaywrightTimeoutError:
+            page.wait_for_timeout(2500)
+
+        candidates = [
+            page.get_by_text("Ventas Netas BI Equivalencia", exact=True).first,
+            page.get_by_text("Ventas Netas BI Equivalencia", exact=False).first,
+            page.locator("a, button, div, span").filter(
+                has_text="Ventas Netas BI Equivalencia"
+            ).first,
+        ]
+
+        last_error: Exception | None = None
+        for candidate in candidates:
+            try:
+                candidate.wait_for(state="visible", timeout=8000)
+                candidate.scroll_into_view_if_needed()
+                page.wait_for_timeout(500)
+                candidate.click(force=True)
+                return
+            except Exception as exc:
+                last_error = exc
+
+        raise RuntimeError(
+            "No se pudo abrir la tarjeta 'Ventas Netas BI Equivalencia' para Grupo Trebol."
+        ) from last_error
 
     def _open_sales_filter_modal(self, page: Page) -> None:
         self.logger.info("[%s] Abriendo modal de filtros de ventas.", self.proveedor.display_name)
