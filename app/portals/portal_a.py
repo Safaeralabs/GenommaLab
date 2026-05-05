@@ -278,20 +278,16 @@ class PortalA(BasePortal):
         except Exception:
             pass
 
+        # Grupo Trebol requiere seleccionar siempre la sede Bg Duitama
+        # antes de continuar al formulario de login.
+        if self._is_grupo_trebol():
+            if self._click_specific_branch(page, "Bg Duitama"):
+                return
+
         known_options = ["Bg Duitama", "Bg Soraca"]
         for option in known_options:
-            try:
-                button = page.get_by_role("button", name=option)
-                if button.count() and button.first.is_visible():
-                    self.logger.info(
-                        "[%s] Seleccionando sede del portal: %s",
-                        self.proveedor.display_name, option,
-                    )
-                    button.first.click()
-                    page.wait_for_timeout(1500)
-                    return
-            except Exception:
-                continue
+            if self._click_specific_branch(page, option):
+                return
 
         login_visible = False
         for sel in ("input[placeholder='usuario']", "input[name='usuario']", "#cajas"):
@@ -330,6 +326,54 @@ class PortalA(BasePortal):
             except Exception:
                 continue
 
+    def _click_specific_branch(self, page: Page, option: str) -> bool:
+        selectors = [
+            f"input[type='submit'][value='{option}']",
+            f"input[value='{option}']",
+        ]
+
+        for selector in selectors:
+            try:
+                locator = page.locator(selector).first
+                if locator.count() and locator.is_visible():
+                    self.logger.info(
+                        "[%s] Seleccionando sede del portal: %s",
+                        self.proveedor.display_name, option,
+                    )
+                    locator.click()
+                    self._wait_after_branch_selection(page)
+                    return True
+            except Exception:
+                continue
+
+        try:
+            button = page.get_by_role("button", name=option)
+            if button.count() and button.first.is_visible():
+                self.logger.info(
+                    "[%s] Seleccionando sede del portal: %s",
+                    self.proveedor.display_name, option,
+                )
+                button.first.click()
+                self._wait_after_branch_selection(page)
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    def _wait_after_branch_selection(self, page: Page) -> None:
+        try:
+            page.locator("input[placeholder='usuario'], input[name='usuario'], #cajas").first.wait_for(
+                state="visible",
+                timeout=10000,
+            )
+        except PlaywrightTimeoutError:
+            page.wait_for_timeout(2000)
+
+    def _is_grupo_trebol(self) -> bool:
+        normalized_name = self._normalize_text(self.proveedor.proveedor)
+        return normalized_name == "grupotrebol"
+
     def _open_ventas_netas_bi(self, page: Page) -> None:
         self.logger.info("[%s] Abriendo modulo Ventas Netas BI.", self.proveedor.display_name)
 
@@ -338,8 +382,14 @@ class PortalA(BasePortal):
         if ventas_link is None:
             raise RuntimeError("No se encontro el enlace visible 'Ventas' en el sidebar.")
         ventas_link.hover()
-        page.get_by_text("Ventas Netas BI", exact=True).first.wait_for(state="visible", timeout=15000)
-        page.get_by_text("Ventas Netas BI", exact=True).first.click()
+
+        ventas_target = (
+            "Ventas Netas BI Equivalencia"
+            if self._is_grupo_trebol()
+            else "Ventas Netas BI"
+        )
+        page.get_by_text(ventas_target, exact=True).first.wait_for(state="visible", timeout=15000)
+        page.get_by_text(ventas_target, exact=True).first.click()
 
         page.locator("text=Ventas Netas Bi").first.wait_for(timeout=30000)
         page.locator("text=Filtrar").first.wait_for(timeout=30000)
