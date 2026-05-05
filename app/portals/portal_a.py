@@ -381,15 +381,17 @@ class PortalA(BasePortal):
         ventas_link = self._find_visible_option(page, "Ventas")
         if ventas_link is None:
             raise RuntimeError("No se encontro el enlace visible 'Ventas' en el sidebar.")
-        ventas_link.hover()
 
-        ventas_target = (
-            "Ventas Netas BI Equivalencia"
-            if self._is_grupo_trebol()
-            else "Ventas Netas BI"
-        )
-        page.get_by_text(ventas_target, exact=True).first.wait_for(state="visible", timeout=15000)
-        page.get_by_text(ventas_target, exact=True).first.click()
+        if self._is_grupo_trebol():
+            ventas_link.click()
+            ventas_target = page.get_by_text("Ventas Netas BI Equivalencia", exact=True).first
+            ventas_target.wait_for(state="visible", timeout=20000)
+            ventas_target.click()
+        else:
+            ventas_link.hover()
+            ventas_target = page.get_by_text("Ventas Netas BI", exact=True).first
+            ventas_target.wait_for(state="visible", timeout=15000)
+            ventas_target.click()
 
         page.locator("text=Ventas Netas Bi").first.wait_for(timeout=30000)
         page.locator("text=Filtrar").first.wait_for(timeout=30000)
