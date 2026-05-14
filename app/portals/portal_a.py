@@ -374,23 +374,32 @@ class PortalA(BasePortal):
         normalized_name = self._normalize_text(self.proveedor.proveedor)
         return normalized_name == "grupotrebol"
 
+    def _is_distriporvenir(self) -> bool:
+        normalized_name = self._normalize_text(self.proveedor.proveedor)
+        return normalized_name == "distriporvenir"
+
     def _open_ventas_netas_bi(self, page: Page) -> None:
         self.logger.info("[%s] Abriendo modulo Ventas Netas BI.", self.proveedor.display_name)
 
         page.get_by_text("Portal Web", exact=True).first.click()
-        ventas_link = self._find_visible_option(page, "Ventas")
-        if ventas_link is None:
-            raise RuntimeError("No se encontro el enlace visible 'Ventas' en el sidebar.")
 
-        if self._is_grupo_trebol():
-            self._open_grupo_trebol_sales_entry(page, ventas_link)
+        if self._is_distriporvenir():
+            self._open_distriporvenir_sales_entry(page)
         else:
-            ventas_link.hover()
-            ventas_target = page.get_by_text("Ventas Netas BI", exact=True).first
-            ventas_target.wait_for(state="visible", timeout=15000)
-            ventas_target.click()
+            ventas_link = self._find_visible_option(page, "Ventas")
+            if ventas_link is None:
+                raise RuntimeError("No se encontro el enlace visible 'Ventas' en el sidebar.")
 
-        page.locator("text=Ventas Netas Bi").first.wait_for(timeout=30000)
+            if self._is_grupo_trebol():
+                self._open_grupo_trebol_sales_entry(page, ventas_link)
+            else:
+                ventas_link.hover()
+                ventas_target = page.get_by_text("Ventas Netas BI", exact=True).first
+                ventas_target.wait_for(state="visible", timeout=15000)
+                ventas_target.click()
+
+        if not self._is_distriporvenir():
+            page.locator("text=Ventas Netas Bi").first.wait_for(timeout=30000)
         page.locator("text=Filtrar").first.wait_for(timeout=30000)
 
     def _open_inventory_report(self, page: Page) -> None:
@@ -453,6 +462,36 @@ class PortalA(BasePortal):
 
         raise RuntimeError(
             "No se pudo abrir la tarjeta 'Ventas Netas BI Equivalencia' para Grupo Trebol."
+        ) from last_error
+
+    def _open_distriporvenir_sales_entry(self, page: Page) -> None:
+        self.logger.info(
+            "[%s] Abriendo ventas via Favoritos > Venta distriporvenir.",
+            self.proveedor.display_name,
+        )
+        favoritos_link = self._find_visible_option(page, "Favoritos")
+        if favoritos_link is None:
+            raise RuntimeError("No se encontro el enlace visible 'Favoritos' en el sidebar.")
+
+        favoritos_link.hover()
+
+        candidates = [
+            page.get_by_text("Venta distriporvenir", exact=True).first,
+            page.get_by_text("Venta Distriporvenir", exact=True).first,
+            page.locator("a, li, span").filter(has_text="Venta distriporvenir").first,
+        ]
+
+        last_error: Exception | None = None
+        for candidate in candidates:
+            try:
+                candidate.wait_for(state="visible", timeout=8000)
+                candidate.click()
+                return
+            except Exception as exc:
+                last_error = exc
+
+        raise RuntimeError(
+            "No se pudo abrir 'Venta distriporvenir' desde Favoritos."
         ) from last_error
 
     def _open_sales_filter_modal(self, page: Page) -> None:
